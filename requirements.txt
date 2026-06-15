@@ -1,0 +1,2 @@
+# No third-party Python packages required.
+# Runtime dependency: ffmpeg and ffprobe must be installed or placed next to main.py.

@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+.venv-build/
+
+build/
+dist/
+*.spec
+
+vendor/windows/*.exe
+vendor/macos/ffmpeg
+vendor/macos/ffprobe
+
+.DS_Store
+Thumbs.db
