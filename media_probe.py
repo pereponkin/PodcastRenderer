@@ -27,9 +27,11 @@ class StreamInfo:
 
 def find_tool(name: str) -> str | None:
     here = Path(__file__).resolve().parent
-    suffix = ".exe" if name.lower() in {"ffmpeg", "ffprobe"} else ""
-    executable_name = f"{name}{suffix}"
-    roots = [here, here / "vendor" / "windows", here / "vendor" / "macos"]
+    executable_name = _tool_executable_name(name, sys.platform)
+    roots = [here]
+    vendor_dir = _platform_vendor_dir(sys.platform)
+    if vendor_dir:
+        roots.append(here / "vendor" / vendor_dir)
     if getattr(sys, "frozen", False):
         roots += [
             Path(getattr(sys, "_MEIPASS", "")),
@@ -44,6 +46,18 @@ def find_tool(name: str) -> str | None:
             if local.exists():
                 return str(local)
     return shutil.which(name)
+
+
+def _tool_executable_name(name: str, platform: str) -> str:
+    return f"{name}.exe" if platform == "win32" else name
+
+
+def _platform_vendor_dir(platform: str) -> str | None:
+    if platform == "win32":
+        return "windows"
+    if platform == "darwin":
+        return "macos"
+    return None
 
 
 def require_tools() -> tuple[str, str]:
