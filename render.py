@@ -76,6 +76,17 @@ class RenderJob:
         video_infos = [info for info in (intro_info, loop_info, outro_info) if info]
         target_width, target_height, target_fps = choose_video_target(video_infos)
         target_fps_text = _format_frame_rate(target_fps)
+        copy_audio = (audio_info.audio_codec or "").lower() == "aac"
+        audio_codec_args = ["-c:a", "copy"] if copy_audio else [
+            "-c:a",
+            "aac",
+            "-b:a",
+            "320k",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+        ]
 
         intro_duration = intro_info.duration if intro_info else 0.0
         outro_duration = outro_info.duration if outro_info else 0.0
@@ -93,6 +104,7 @@ class RenderJob:
             log(f"OUTRO duration: {outro_info.duration:.3f}s")
         log(f"Output video: {target_width}x{target_height} at {target_fps_text} fps")
         log(f"Video bitrate: {VIDEO_BITRATE}")
+        log("Audio: stream copy (AAC)" if copy_audio else "Audio: AAC 48000 Hz, 320k, stereo")
         log(f"Output: {output}")
         log("Step 1/1: rendering final MP4")
 
@@ -164,14 +176,7 @@ class RenderJob:
             target_fps_text,
             "-fps_mode",
             "cfr",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "320k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
+            *audio_codec_args,
             "-movflags",
             "+faststart",
             "-progress",

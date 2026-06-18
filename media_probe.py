@@ -22,6 +22,7 @@ class StreamInfo:
     width: int | None = None
     height: int | None = None
     frame_rate: float | None = None
+    audio_codec: str | None = None
 
 
 def find_tool(name: str) -> str | None:
@@ -89,6 +90,7 @@ def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
     duration = _duration(data, streams)
     bitrate = _video_bitrate(data, streams)
     video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
     width, height = _display_dimensions(video_stream)
     frame_rate = _frame_rate(video_stream)
     return StreamInfo(
@@ -99,6 +101,7 @@ def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
         width=width,
         height=height,
         frame_rate=frame_rate,
+        audio_codec=audio_stream.get("codec_name") if audio_stream else None,
     )
 
 
