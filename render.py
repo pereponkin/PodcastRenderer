@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from media_probe import ProbeError, probe_audio, probe_video, require_tools
+from media_probe import ProbeError, StreamInfo, probe_audio, probe_video, require_tools
 
 
 LogFn = Callable[[str], None]
@@ -73,6 +73,10 @@ class RenderJob:
         if not loop_info or loop_info.duration <= 0:
             raise ProbeError("LOOP has zero duration")
 
+        video_infos = [info for info in (intro_info, loop_info, outro_info) if info]
+        target_width, target_height, target_fps = choose_video_target(video_infos)
+        target_fps_text = _format_frame_rate(target_fps)
+
         intro_duration = intro_info.duration if intro_info else 0.0
         outro_duration = outro_info.duration if outro_info else 0.0
         middle_duration = audio_info.duration - intro_duration - outro_duration
@@ -87,6 +91,7 @@ class RenderJob:
         log(f"LOOP middle duration: {middle_duration:.3f}s")
         if outro_info:
             log(f"OUTRO duration: {outro_info.duration:.3f}s")
+        log(f"Output video: {target_width}x{target_height} at {target_fps_text} fps")
         log(f"Video bitrate: {VIDEO_BITRATE}")
         log(f"Output: {output}")
         log("Step 1/1: rendering final MP4")
@@ -105,7 +110,8 @@ class RenderJob:
             input_args.extend(["-i", str(path)])
             out_label = f"v{len(labels)}"
             filters.append(
-                f"[{input_index}:v]{_video_filter()},trim=duration={duration:.6f},"
+                f"[{input_index}:v]{_video_filter(target_width, target_height, target_fps_text)},"
+                f"trim=duration={duration:.6f},"
                 f"setpts=PTS-STARTPTS[{out_label}]"
             )
             labels.append(f"[{out_label}]")
@@ -155,7 +161,7 @@ class RenderJob:
             "-bufsize",
             "4096k",
             "-r",
-            "30",
+            target_fps_text,
             "-fps_mode",
             "cfr",
             "-c:a",
@@ -253,8 +259,31 @@ def render_video(
     return RenderJob().render(audio_path, intro_path, loop_path, outro_path, output_dir, log, progress)
 
 
-def _video_filter() -> str:
-    return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1"
+def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, float]:
+    if not infos:
+        raise RenderError("No video stream information available")
+    if any(not info.width or not info.height or not info.frame_rate for info in infos):
+        raise RenderError("Could not determine video resolution or frame rate")
+
+    weakest = min(infos, key=lambda info: (info.width or 0) * (info.height or 0))
+    width = weakest.width or 0
+    height = weakest.height or 0
+    width -= width % 2
+    height -= height % 2
+    frame_rate = min(info.frame_rate or 0 for info in infos)
+    return width, height, frame_rate
+
+
+def _video_filter(width: int, height: int, frame_rate: str) -> str:
+    return (
+        f"scale='min(iw,{width})':'min(ih,{height})':force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        f"fps={frame_rate},format=yuv420p,setsar=1"
+    )
+
+
+def _format_frame_rate(frame_rate: float) -> str:
+    return f"{frame_rate:.6f}".rstrip("0").rstrip(".")
 
 
 def _handle_progress_line(line: str, duration: float, progress: ProgressFn | None) -> bool:

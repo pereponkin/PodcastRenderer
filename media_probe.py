@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 
@@ -18,6 +19,9 @@ class StreamInfo:
     video_bitrate: int | None = None
     has_video: bool = False
     has_audio: bool = False
+    width: int | None = None
+    height: int | None = None
+    frame_rate: float | None = None
 
 
 def find_tool(name: str) -> str | None:
@@ -84,7 +88,18 @@ def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
     has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
     duration = _duration(data, streams)
     bitrate = _video_bitrate(data, streams)
-    return StreamInfo(duration=duration, video_bitrate=bitrate, has_video=has_video, has_audio=has_audio)
+    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    width, height = _display_dimensions(video_stream)
+    frame_rate = _frame_rate(video_stream)
+    return StreamInfo(
+        duration=duration,
+        video_bitrate=bitrate,
+        has_video=has_video,
+        has_audio=has_audio,
+        width=width,
+        height=height,
+        frame_rate=frame_rate,
+    )
 
 
 def probe_audio(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
@@ -102,6 +117,10 @@ def probe_video(path: str | Path, label: str, ffprobe: str | None = None) -> Str
         raise ProbeError(f"{label} has no readable video stream: {path}")
     if info.duration <= 0:
         raise ProbeError(f"{label} duration is invalid: {path}")
+    if not info.width or not info.height:
+        raise ProbeError(f"{label} resolution is invalid: {path}")
+    if not info.frame_rate or info.frame_rate <= 0:
+        raise ProbeError(f"{label} frame rate is invalid: {path}")
     return info
 
 
@@ -141,3 +160,40 @@ def _to_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _display_dimensions(stream: dict | None) -> tuple[int | None, int | None]:
+    if not stream:
+        return None, None
+    width = _to_int(stream.get("width"))
+    height = _to_int(stream.get("height"))
+    if not width or not height:
+        return None, None
+    rotation = _rotation(stream)
+    if rotation % 180:
+        width, height = height, width
+    return width, height
+
+
+def _rotation(stream: dict) -> int:
+    candidates = [stream.get("tags", {}).get("rotate")]
+    candidates += [item.get("rotation") for item in stream.get("side_data_list", [])]
+    for value in candidates:
+        try:
+            return int(round(float(value))) % 360
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _frame_rate(stream: dict | None) -> float | None:
+    if not stream:
+        return None
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        try:
+            rate = float(Fraction(str(stream.get(key))))
+        except (ValueError, ZeroDivisionError):
+            continue
+        if rate > 0:
+            return rate
+    return None

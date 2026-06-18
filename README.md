@@ -45,6 +45,8 @@ Video selection rules:
 - `INTRO + LOOP`: intro starts at 00:00, loop fills the rest.
 - `LOOP + OUTRO`: loop fills the beginning, outro ends with the audio.
 - `INTRO + OUTRO` without `LOOP` is not allowed because there is no middle filler.
+- With one video, its display resolution and frame rate are preserved as the output target.
+- With multiple videos, the output uses the complete resolution of the source with the lowest pixel count and the lowest source frame rate. Sources are never enlarged; aspect ratio is preserved with padding when needed, including portrait video.
 
 The output is saved in the selected `OUTPUT` folder as:
 
@@ -54,7 +56,7 @@ The output is saved in the selected `OUTPUT` folder as:
 
 The output folder is filled from the audio file folder automatically, but you can change it in the `OUTPUT` field. If the output file exists, the app writes `_1`, `_2`, etc. It does not silently overwrite.
 
-The final file is MP4 with H.264 High Profile, `yuv420p`, 1920x1080, constant 30 fps, 2048k video bitrate (`maxrate` 2048k, `bufsize` 4096k, x264 `veryfast` preset), AAC audio at 48 kHz, 320k, stereo, and `+faststart`.
+The final file is MP4 with H.264 High Profile, `yuv420p`, source-derived resolution and constant frame rate, 2048k video bitrate (`maxrate` 2048k, `bufsize` 4096k, x264 `veryfast` preset), AAC audio at 48 kHz, 320k, stereo, and `+faststart`.
 
 Mono input audio is converted to stereo. Audio at 44.1 kHz is converted to 48 kHz because that is the final YouTube-friendly target.
 
