@@ -40,7 +40,15 @@ class App(tk.Tk):
         self.rowconfigure(6, weight=1)
 
         filetypes = {
-            "AUDIO": [("Audio files", "*.wav *.mp3 *.flac *.aiff *.aif *.m4a"), ("All files", "*.*")],
+            "AUDIO": [
+                (
+                    "Audio files",
+                    "*.wav *.mp3 *.flac *.aiff *.aif *.m4a *.aac "
+                    "*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.mpeg *.mpg "
+                    "*.ts *.mts *.m2ts *.wmv",
+                ),
+                ("All files", "*.*"),
+            ],
             "INTRO": [("Video files", "*.mp4 *.mov *.m4v"), ("All files", "*.*")],
             "LOOP": [("Video files", "*.mp4 *.mov *.m4v"), ("All files", "*.*")],
             "OUTRO": [("Video files", "*.mp4 *.mov *.m4v"), ("All files", "*.*")],

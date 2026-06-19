@@ -2,6 +2,8 @@
 
 Small Python GUI app that renders a YouTube-compatible MP4 from one audio file and up to three silent video files: intro, loop, outro. Video inputs can be MP4, MOV, or M4V as long as FFmpeg can read them.
 
+The `Audio` source may also be a common video container such as MP4, MOV, MKV, AVI, WebM, MPEG, TS, or WMV. Only its first audio stream is used.
+
 ## Run on Windows
 
 1. Install Python 3 from <https://www.python.org/downloads/windows/>.
