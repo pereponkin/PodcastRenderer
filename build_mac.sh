@@ -6,6 +6,8 @@ cd "$(dirname "$0")"
 APP_NAME="PodcastRenderer"
 VENV=".venv-build"
 VENDOR_DIR="vendor/macos"
+NOTICES="THIRD_PARTY_NOTICES.md"
+PACKAGE_DIR="dist/${APP_NAME}-macOS"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -24,6 +26,11 @@ find_binary() {
 }
 
 need python3
+
+if [[ ! -f "$NOTICES" ]]; then
+  echo "Missing $NOTICES"
+  exit 1
+fi
 
 FFMPEG="$(find_binary ffmpeg)"
 FFPROBE="$(find_binary ffprobe)"
@@ -74,13 +81,19 @@ rm -rf build dist "${APP_NAME}.spec"
   --name "$APP_NAME" \
   --add-binary "$FFMPEG:bin" \
   --add-binary "$FFPROBE:bin" \
+  --add-data "$NOTICES:." \
   main.py
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "dist/${APP_NAME}.app" || true
 fi
 
-ditto -c -k --sequesterRsrc --keepParent "dist/${APP_NAME}.app" "dist/${APP_NAME}-macOS.zip"
+cp "$NOTICES" "dist/$NOTICES"
+rm -rf "$PACKAGE_DIR"
+mkdir -p "$PACKAGE_DIR"
+cp -R "dist/${APP_NAME}.app" "$PACKAGE_DIR/"
+cp "$NOTICES" "$PACKAGE_DIR/$NOTICES"
+ditto -c -k --sequesterRsrc --keepParent "$PACKAGE_DIR" "dist/${APP_NAME}-macOS.zip"
 
 cat <<MSG
 Done.
@@ -90,4 +103,7 @@ App:
 
 Zip to send:
   dist/${APP_NAME}-macOS.zip
+
+Third-party notices:
+  dist/${NOTICES}
 MSG

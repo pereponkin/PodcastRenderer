@@ -97,7 +97,12 @@ The single-file executable will be:
 
 ```text
 dist\PodcastRenderer.exe
+dist\PodcastRenderer-windows.zip
+dist\THIRD_PARTY_NOTICES.md
 ```
+
+Send `dist\PodcastRenderer-windows.zip` when you redistribute the bundled
+Windows build. It contains the executable and third-party notices.
 
 macOS:
 
@@ -129,9 +134,23 @@ The script builds:
 ```text
 dist/PodcastRenderer.app
 dist/PodcastRenderer-macOS.zip
+dist/THIRD_PARTY_NOTICES.md
 ```
 
-Send the zip to the Mac user. If `vendor/macos` is missing, the script can use `ffmpeg` and `ffprobe` from `PATH`, but Homebrew binaries may require Homebrew libraries on the target Mac.
+Send `dist/PodcastRenderer-macOS.zip` to the Mac user. It contains the app and
+third-party notices. If `vendor/macos` is missing, the script can use `ffmpeg`
+and `ffprobe` from `PATH`, but Homebrew binaries may require Homebrew libraries
+on the target Mac.
+
+## License and Third-Party Notices
+
+No project license is currently granted in this repository. Unless a `LICENSE`
+file is added later, the application source code and assets remain all rights
+reserved by their copyright holder.
+
+Runtime operation depends on FFmpeg/ffprobe. Standalone builds may bundle
+FFmpeg/ffprobe, PyInstaller bootloader files, Python runtime files, and Tcl/Tk
+runtime files. See `THIRD_PARTY_NOTICES.md` before redistributing binaries.
 
 ## Notes
 
