@@ -7,7 +7,7 @@ The `Audio` source may also be a common video container such as MP4, MOV, MKV, A
 ## Run on Windows
 
 1. Install Python 3 from <https://www.python.org/downloads/windows/>.
-2. Install FFmpeg:
+2. Install FFmpeg 5.1 or newer:
    - easiest: `winget install Gyan.FFmpeg`
    - or download a build from <https://www.gyan.dev/ffmpeg/builds/> and add its `bin` folder to `PATH`
    - alternatively put `ffmpeg.exe` and `ffprobe.exe` next to `main.py`
@@ -20,13 +20,13 @@ python main.py
 
 ## Run on macOS
 
-1. Install Python 3 from <https://www.python.org/downloads/macos/> or with Homebrew:
+1. Install Python 3 with Tkinter from <https://www.python.org/downloads/macos/> or with Homebrew:
 
 ```bash
-brew install python
+brew install python-tk
 ```
 
-2. Install FFmpeg:
+2. Install FFmpeg 5.1 or newer:
 
 ```bash
 brew install ffmpeg
@@ -64,10 +64,10 @@ AAC input audio is copied into the MP4 without re-encoding. Other audio formats 
 
 ## Build Standalone with PyInstaller
 
-Install PyInstaller:
+Install the pinned build dependency:
 
 ```bash
-python -m pip install pyinstaller
+python -m pip install -r requirements-build.txt
 ```
 
 Windows:
@@ -85,6 +85,8 @@ Put Windows FFmpeg binaries here:
 ```text
 vendor/windows/ffmpeg.exe
 vendor/windows/ffprobe.exe
+vendor/windows/ffmpeg.sha256
+vendor/windows/ffprobe.sha256
 ```
 
 Then run in PowerShell:
@@ -92,6 +94,10 @@ Then run in PowerShell:
 ```powershell
 .\build_windows.ps1
 ```
+
+The build stops if either binary does not match its recorded SHA-256. After a
+deliberate FFmpeg update, regenerate both `.sha256` files from the trusted new
+binaries before building.
 
 The single-file executable will be:
 
@@ -107,7 +113,7 @@ Windows build. It contains the executable and third-party notices.
 macOS:
 
 ```bash
-python3 -m pip install pyinstaller
+python3 -m pip install -r requirements-build.txt
 python3 -m PyInstaller --windowed --name PodcastRenderer main.py
 ```
 
@@ -120,12 +126,16 @@ On a Mac, put self-contained macOS `ffmpeg` and `ffprobe` binaries here:
 ```text
 vendor/macos/ffmpeg
 vendor/macos/ffprobe
+vendor/macos/ffmpeg.sha256
+vendor/macos/ffprobe.sha256
 ```
 
 Then run:
 
 ```bash
 chmod +x vendor/macos/ffmpeg vendor/macos/ffprobe
+shasum -a 256 vendor/macos/ffmpeg | awk '{print $1}' > vendor/macos/ffmpeg.sha256
+shasum -a 256 vendor/macos/ffprobe | awk '{print $1}' > vendor/macos/ffprobe.sha256
 bash build_mac.sh
 ```
 
@@ -156,4 +166,13 @@ runtime files. See `THIRD_PARTY_NOTICES.md` before redistributing binaries.
 
 - Paths with spaces, Cyrillic, and special characters are passed to FFmpeg safely through Python `subprocess` argument lists.
 - Rendering runs as one FFmpeg process and can be cancelled from the GUI.
+- Closing the window cancels and waits for an active FFmpeg process.
+- Each ffprobe analysis is limited to 15 seconds, so an unreadable source cannot leave the app waiting indefinitely.
+- FFmpeg renders to a hidden partial MP4. Failed or cancelled partial files are removed, and the final name is published only after success.
 - If rendering fails, the GUI log shows the command and FFmpeg output.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```

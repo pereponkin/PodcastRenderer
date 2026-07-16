@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -13,15 +14,17 @@ class ProbeError(RuntimeError):
     pass
 
 
+PROBE_TIMEOUT_SECONDS = 15.0
+
+
 @dataclass(frozen=True)
 class StreamInfo:
     duration: float
-    video_bitrate: int | None = None
     has_video: bool = False
     has_audio: bool = False
     width: int | None = None
     height: int | None = None
-    frame_rate: float | None = None
+    frame_rate: Fraction | None = None
     audio_codec: str | None = None
 
 
@@ -33,19 +36,19 @@ def find_tool(name: str) -> str | None:
     if vendor_dir:
         roots.append(here / "vendor" / vendor_dir)
     if getattr(sys, "frozen", False):
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            roots.append(Path(bundle_root))
         roots += [
-            Path(getattr(sys, "_MEIPASS", "")),
             Path(sys.executable).resolve().parent,
             Path(sys.executable).resolve().parent.parent / "Resources",
             Path(sys.executable).resolve().parent.parent / "Frameworks",
         ]
     for root in roots:
-        if not root:
-            continue
         for local in (root / executable_name, root / "bin" / executable_name):
             if local.exists():
                 return str(local)
-    return shutil.which(name)
+    return shutil.which(name, path=os.environ.get("PATH", os.defpath))
 
 
 def _tool_executable_name(name: str, platform: str) -> str:
@@ -73,7 +76,15 @@ def require_tools() -> tuple[str, str]:
 
 
 def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
-    media_path = Path(path)
+    return _probe(path, ffprobe, preferred_stream_type=None)
+
+
+def _probe(
+    path: str | Path,
+    ffprobe: str | None,
+    preferred_stream_type: str | None,
+) -> StreamInfo:
+    media_path = Path(path).expanduser().resolve()
     if not media_path.exists():
         raise ProbeError(f"File does not exist: {media_path}")
     ffprobe = ffprobe or require_tools()[1]
@@ -85,10 +96,21 @@ def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
         "json",
         "-show_format",
         "-show_streams",
+        "-nostdin",
         str(media_path),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProbeError(f"ffprobe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s: {media_path}") from exc
     except OSError as exc:
         raise ProbeError(f"Could not run ffprobe: {exc}") from exc
     if result.returncode != 0:
@@ -101,15 +123,13 @@ def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
     streams = data.get("streams", [])
     has_video = any(stream.get("codec_type") == "video" for stream in streams)
     has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
-    duration = _duration(data, streams)
-    bitrate = _video_bitrate(data, streams)
+    duration = _duration(data, streams, preferred_stream_type)
     video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
     audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
     width, height = _display_dimensions(video_stream)
     frame_rate = _frame_rate(video_stream)
     return StreamInfo(
         duration=duration,
-        video_bitrate=bitrate,
         has_video=has_video,
         has_audio=has_audio,
         width=width,
@@ -120,7 +140,7 @@ def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
 
 
 def probe_audio(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
-    info = probe(path, ffprobe)
+    info = _probe(path, ffprobe, preferred_stream_type="audio")
     if not info.has_audio:
         raise ProbeError(f"AUDIO has no readable audio stream: {path}")
     if info.duration <= 0:
@@ -129,7 +149,7 @@ def probe_audio(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
 
 
 def probe_video(path: str | Path, label: str, ffprobe: str | None = None) -> StreamInfo:
-    info = probe(path, ffprobe)
+    info = _probe(path, ffprobe, preferred_stream_type="video")
     if not info.has_video:
         raise ProbeError(f"{label} has no readable video stream: {path}")
     if info.duration <= 0:
@@ -141,15 +161,15 @@ def probe_video(path: str | Path, label: str, ffprobe: str | None = None) -> Str
     return info
 
 
-def choose_video_bitrate(*bitrates: int | None) -> str:
-    found = [value for value in bitrates if value]
-    if not found:
-        return "2048k"
-    return f"{max(max(found), 2_048_000) // 1000}k"
-
-
-def _duration(data: dict, streams: list[dict]) -> float:
-    candidates = [data.get("format", {}).get("duration")]
+def _duration(data: dict, streams: list[dict], preferred_stream_type: str | None) -> float:
+    preferred = None
+    if preferred_stream_type:
+        preferred = next(
+            (stream for stream in streams if stream.get("codec_type") == preferred_stream_type),
+            None,
+        )
+    candidates = [preferred.get("duration") if preferred else None]
+    candidates += [data.get("format", {}).get("duration")]
     candidates += [stream.get("duration") for stream in streams]
     for value in candidates:
         try:
@@ -159,16 +179,6 @@ def _duration(data: dict, streams: list[dict]) -> float:
         if duration > 0:
             return duration
     return 0.0
-
-
-def _video_bitrate(data: dict, streams: list[dict]) -> int | None:
-    for stream in streams:
-        if stream.get("codec_type") != "video":
-            continue
-        bitrate = _to_int(stream.get("bit_rate"))
-        if bitrate:
-            return bitrate
-    return _to_int(data.get("format", {}).get("bit_rate"))
 
 
 def _to_int(value: object) -> int | None:
@@ -203,12 +213,12 @@ def _rotation(stream: dict) -> int:
     return 0
 
 
-def _frame_rate(stream: dict | None) -> float | None:
+def _frame_rate(stream: dict | None) -> Fraction | None:
     if not stream:
         return None
     for key in ("avg_frame_rate", "r_frame_rate"):
         try:
-            rate = float(Fraction(str(stream.get(key))))
+            rate = Fraction(str(stream.get(key)))
         except (ValueError, ZeroDivisionError):
             continue
         if rate > 0:

@@ -7,6 +7,7 @@ APP_NAME="PodcastRenderer"
 VENV=".venv-build"
 VENDOR_DIR="vendor/macos"
 NOTICES="THIRD_PARTY_NOTICES.md"
+BUILD_REQUIREMENTS="requirements-build.txt"
 PACKAGE_DIR="dist/${APP_NAME}-macOS"
 
 need() {
@@ -25,10 +26,37 @@ find_binary() {
   command -v "$name" || true
 }
 
+verify_hash() {
+  local binary="$1"
+  local hash_file="$2"
+  if [[ ! -f "$hash_file" ]]; then
+    echo "Missing SHA-256 file: $hash_file"
+    exit 1
+  fi
+  local expected
+  local actual
+  expected="$(tr -d '[:space:]' < "$hash_file" | tr '[:upper:]' '[:lower:]')"
+  actual="$(shasum -a 256 "$binary" | awk '{print $1}')"
+  if [[ ! "$expected" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+    echo "Invalid SHA-256 value in $hash_file"
+    exit 1
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    echo "SHA-256 mismatch for $binary"
+    echo "Expected: $expected"
+    echo "Actual:   $actual"
+    exit 1
+  fi
+}
+
 need python3
 
 if [[ ! -f "$NOTICES" ]]; then
   echo "Missing $NOTICES"
+  exit 1
+fi
+if [[ ! -f "$BUILD_REQUIREMENTS" ]]; then
+  echo "Missing $BUILD_REQUIREMENTS"
   exit 1
 fi
 
@@ -56,6 +84,13 @@ MSG
   exit 1
 fi
 
+if [[ "$FFMPEG" == "$VENDOR_DIR/ffmpeg" ]]; then
+  verify_hash "$FFMPEG" "$VENDOR_DIR/ffmpeg.sha256"
+fi
+if [[ "$FFPROBE" == "$VENDOR_DIR/ffprobe" ]]; then
+  verify_hash "$FFPROBE" "$VENDOR_DIR/ffprobe.sha256"
+fi
+
 if [[ "$FFMPEG" != "$VENDOR_DIR/ffmpeg" || "$FFPROBE" != "$VENDOR_DIR/ffprobe" ]]; then
   cat <<MSG
 Using ffmpeg/ffprobe from PATH:
@@ -71,7 +106,7 @@ MSG
 fi
 
 python3 -m venv "$VENV"
-"$VENV/bin/python" -m pip install --upgrade pip pyinstaller
+"$VENV/bin/python" -m pip install --disable-pip-version-check --requirement "$BUILD_REQUIREMENTS"
 
 rm -rf build dist "${APP_NAME}.spec"
 
@@ -94,6 +129,7 @@ mkdir -p "$PACKAGE_DIR"
 cp -R "dist/${APP_NAME}.app" "$PACKAGE_DIR/"
 cp "$NOTICES" "$PACKAGE_DIR/$NOTICES"
 ditto -c -k --sequesterRsrc --keepParent "$PACKAGE_DIR" "dist/${APP_NAME}-macOS.zip"
+rm -rf build "${APP_NAME}.spec"
 
 cat <<MSG
 Done.

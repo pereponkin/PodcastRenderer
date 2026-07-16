@@ -32,7 +32,9 @@ class App(tk.Tk):
         self.current_job: RenderJob | None = None
         self.render_started_at: float | None = None
         self.progress_value = 0.0
+        self._closing = False
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_log)
 
     def _build(self) -> None:
@@ -97,10 +99,10 @@ class App(tk.Tk):
             if key == "AUDIO" and not self.entries["OUTPUT"].get().strip():
                 self.entries["OUTPUT"].set(str(Path(selected).parent))
             if key in {"INTRO", "LOOP", "OUTRO"}:
-                self._autofill_video_siblings(Path(selected))
+                self._autofill_video_siblings(Path(selected), key)
 
-    def _autofill_video_siblings(self, selected: Path) -> None:
-        for key, path in find_video_siblings(selected).items():
+    def _autofill_video_siblings(self, selected: Path, selected_slot: str) -> None:
+        for key, path in find_video_siblings(selected, selected_slot).items():
             if not self.entries[key].get().strip():
                 self.entries[key].set(str(path))
 
@@ -145,8 +147,7 @@ class App(tk.Tk):
         self.progress_value = 0.0
         self._draw_progress()
         self.current_job = RenderJob()
-        thread = threading.Thread(target=self._render_worker, args=(paths,), daemon=True)
-        thread.start()
+        threading.Thread(target=self._render_worker, args=(paths,), daemon=True).start()
 
     def _render_worker(self, paths: dict[str, str]) -> None:
         try:
@@ -172,6 +173,18 @@ class App(tk.Tk):
             self._append("Cancelling...")
             self.current_job.cancel()
 
+    def _on_close(self) -> None:
+        if self._closing:
+            return
+        if not self.current_job:
+            self.destroy()
+            return
+        self._closing = True
+        self._append("Closing: cancelling render...")
+        if self.cancel_button:
+            self.cancel_button.configure(state="disabled")
+        self.current_job.cancel()
+
     def _drain_log(self) -> None:
         try:
             while True:
@@ -185,15 +198,24 @@ class App(tk.Tk):
                     self._append("")
                     self._append(text)
                     self._set_busy(False)
+                    if self._closing:
+                        self.destroy()
+                        return
                 elif kind == "error":
                     self._append("")
                     self._append("ERROR: " + text)
                     self._set_busy(False)
+                    if self._closing:
+                        self.destroy()
+                        return
                     messagebox.showerror("Render failed", text)
                 elif kind == "done":
                     self._append("")
                     self._append("DONE: " + text)
                     self._set_busy(False)
+                    if self._closing:
+                        self.destroy()
+                        return
                     messagebox.showinfo("Render complete", f"Saved:\n{text}")
         except queue.Empty:
             pass
@@ -238,6 +260,8 @@ class App(tk.Tk):
         if not self.render_started_at:
             return "00:00 elapsed / --:-- remaining"
         elapsed = max(0.0, time.monotonic() - self.render_started_at)
+        if 0.999 <= value < 1.0:
+            return f"{_format_time(elapsed)} elapsed / finalizing"
         if value <= 0:
             remaining = None
         else:
@@ -262,7 +286,7 @@ def app_path(*parts: str) -> Path:
     return Path(__file__).resolve().parent.joinpath(*parts)
 
 
-def find_video_siblings(selected: Path) -> dict[str, Path]:
+def find_video_siblings(selected: Path, selected_slot: str | None = None) -> dict[str, Path]:
     markers = {
         "INTRO": ("intro",),
         "LOOP": ("loop",),
@@ -270,6 +294,8 @@ def find_video_siblings(selected: Path) -> dict[str, Path]:
     }
     selected_marker = _find_marker(selected.stem, markers)
     if not selected_marker:
+        return {}
+    if selected_slot and selected_marker[0] != selected_slot:
         return {}
 
     result: dict[str, Path] = {selected_marker[0]: selected}

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import threading
+import uuid
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
@@ -11,6 +15,8 @@ from media_probe import ProbeError, StreamInfo, probe_audio, probe_video, requir
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[float], None]
 VIDEO_BITRATE = "2048k"
+CANCEL_KILL_TIMEOUT = 5.0
+FINALIZING_PROGRESS = 0.999
 
 
 class RenderError(RuntimeError):
@@ -32,7 +38,13 @@ class RenderJob:
             self._cancelled = True
             process = self._process
         if process and process.poll() is None:
-            process.terminate()
+            try:
+                process.terminate()
+            except OSError:
+                return
+            watchdog = threading.Timer(CANCEL_KILL_TIMEOUT, _kill_if_running, args=(process,))
+            watchdog.daemon = True
+            watchdog.start()
 
     def render(
         self,
@@ -44,10 +56,11 @@ class RenderJob:
         log: LogFn = print,
         progress: ProgressFn | None = None,
     ) -> Path:
-        audio = Path(audio_path)
-        intro = Path(intro_path) if intro_path else None
-        loop = Path(loop_path) if loop_path else None
-        outro = Path(outro_path) if outro_path else None
+        audio = Path(audio_path).expanduser().resolve()
+        intro = Path(intro_path).expanduser().resolve() if intro_path else None
+        loop = Path(loop_path).expanduser().resolve() if loop_path else None
+        outro = Path(outro_path).expanduser().resolve() if outro_path else None
+        output_dir = Path(output_dir).expanduser().resolve() if output_dir else None
 
         ffmpeg, ffprobe = require_tools()
         log(f"ffmpeg: {ffmpeg}")
@@ -70,7 +83,7 @@ class RenderJob:
         intro_info = probe_video(intro, "INTRO", ffprobe) if intro else None
         loop_info = probe_video(loop, "LOOP", ffprobe) if loop else None
         outro_info = probe_video(outro, "OUTRO", ffprobe) if outro else None
-        if not loop_info or loop_info.duration <= 0:
+        if not loop_info:
             raise ProbeError("LOOP has zero duration")
 
         video_infos = [info for info in (intro_info, loop_info, outro_info) if info]
@@ -94,7 +107,7 @@ class RenderJob:
         if middle_duration <= 0:
             raise RenderError("Audio is too short for selected intro/outro")
 
-        output = unique_output_path(audio, output_dir)
+        partial_output = _partial_output_path(audio, output_dir)
 
         log(f"AUDIO duration: {audio_info.duration:.3f}s")
         if intro_info:
@@ -105,20 +118,20 @@ class RenderJob:
         log(f"Output video: {target_width}x{target_height} at {target_fps_text} fps")
         log(f"Video bitrate: {VIDEO_BITRATE}")
         log("Audio: stream copy (AAC)" if copy_audio else "Audio: AAC 48000 Hz, 320k, stereo")
-        log(f"Output: {output}")
+        log(f"Output folder: {partial_output.parent}")
         log("Step 1/1: rendering final MP4")
 
         input_args: list[str] = []
         filters: list[str] = []
         labels: list[str] = []
-        audio_input_index = 0
+        next_input_index = 0
 
-        def add_video_input(path: Path, label: str, duration: float, stream_loop: bool = False) -> None:
-            nonlocal audio_input_index
+        def add_video_input(path: Path, duration: float, stream_loop: bool = False) -> None:
+            nonlocal next_input_index
             if stream_loop:
                 input_args.extend(["-stream_loop", "-1"])
-            input_index = audio_input_index
-            audio_input_index += 1
+            input_index = next_input_index
+            next_input_index += 1
             input_args.extend(["-i", str(path)])
             out_label = f"v{len(labels)}"
             filters.append(
@@ -129,13 +142,13 @@ class RenderJob:
             labels.append(f"[{out_label}]")
 
         if intro and intro_info:
-            add_video_input(intro, "INTRO", intro_info.duration)
+            add_video_input(intro, intro_info.duration)
         assert loop is not None
-        add_video_input(loop, "LOOP", middle_duration, stream_loop=True)
+        add_video_input(loop, middle_duration, stream_loop=True)
         if outro and outro_info:
-            add_video_input(outro, "OUTRO", outro_info.duration)
+            add_video_input(outro, outro_info.duration)
 
-        audio_index = audio_input_index
+        audio_index = next_input_index
         input_args.extend(["-i", str(audio)])
         if len(labels) == 1:
             video_output = labels[0]
@@ -147,7 +160,8 @@ class RenderJob:
 
         cmd = [
             ffmpeg,
-            "-y",
+            "-n",
+            "-nostdin",
             "-hide_banner",
             *input_args,
             "-filter_complex",
@@ -182,11 +196,17 @@ class RenderJob:
             "-progress",
             "pipe:1",
             "-nostats",
-            str(output),
+            str(partial_output),
         ]
-        self._run(cmd, audio_info.duration, log, progress)
+        try:
+            self._run(cmd, audio_info.duration, log, progress)
+            output = _publish_output(partial_output, audio, output_dir)
+        except BaseException:
+            partial_output.unlink(missing_ok=True)
+            raise
         if progress:
             progress(1.0)
+        log(f"Output: {output}")
         return output
 
     def _run(
@@ -209,6 +229,7 @@ class RenderJob:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             process = self._process
 
@@ -226,29 +247,45 @@ class RenderJob:
                 self._process = None
 
         if self._cancelled:
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
             raise RenderCancelled("Render cancelled")
         if code != 0:
             raise RenderError(f"ffmpeg failed with exit code {code}")
 
 
-def unique_output_path(audio_path: str | Path, output_dir: str | Path | None = None) -> Path:
+def _output_folder(audio_path: str | Path, output_dir: str | Path | None) -> Path:
     audio = Path(audio_path)
     folder = Path(output_dir) if output_dir else audio.parent
     if not folder.exists():
         raise RenderError(f"Output folder does not exist: {folder}")
     if not folder.is_dir():
         raise RenderError(f"Output path is not a folder: {folder}")
-    base = folder / f"{audio.stem}_video.mp4"
-    if not base.exists():
-        return base
-    for index in range(1, 1000):
-        candidate = folder / f"{audio.stem}_video_{index}.mp4"
-        if not candidate.exists():
-            return candidate
+    return folder
+
+
+def _partial_output_path(audio_path: str | Path, output_dir: str | Path | None) -> Path:
+    audio = Path(audio_path)
+    folder = _output_folder(audio, output_dir)
+    return folder / f".{audio.stem}_video.{uuid.uuid4().hex}.partial.mp4"
+
+
+def _publish_output(partial: Path, audio_path: str | Path, output_dir: str | Path | None) -> Path:
+    audio = Path(audio_path)
+    folder = _output_folder(audio, output_dir)
+    candidates = [folder / f"{audio.stem}_video.mp4"]
+    candidates.extend(folder / f"{audio.stem}_video_{index}.mp4" for index in range(1, 1000))
+
+    for candidate in candidates:
+        try:
+            descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        os.close(descriptor)
+        try:
+            os.replace(partial, candidate)
+        except BaseException:
+            candidate.unlink(missing_ok=True)
+            raise
+        return candidate
     raise RenderError("Could not choose an output name. Too many existing files.")
 
 
@@ -264,7 +301,7 @@ def render_video(
     return RenderJob().render(audio_path, intro_path, loop_path, outro_path, output_dir, log, progress)
 
 
-def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, float]:
+def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, Fraction]:
     if not infos:
         raise RenderError("No video stream information available")
     if any(not info.width or not info.height or not info.frame_rate for info in infos):
@@ -275,7 +312,7 @@ def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, float]:
     height = weakest.height or 0
     width -= width % 2
     height -= height % 2
-    frame_rate = min(info.frame_rate or 0 for info in infos)
+    frame_rate = min(info.frame_rate for info in infos if info.frame_rate is not None)
     return width, height, frame_rate
 
 
@@ -287,8 +324,10 @@ def _video_filter(width: int, height: int, frame_rate: str) -> str:
     )
 
 
-def _format_frame_rate(frame_rate: float) -> str:
-    return f"{frame_rate:.6f}".rstrip("0").rstrip(".")
+def _format_frame_rate(frame_rate: Fraction) -> str:
+    if frame_rate.denominator == 1:
+        return str(frame_rate.numerator)
+    return f"{frame_rate.numerator}/{frame_rate.denominator}"
 
 
 def _handle_progress_line(line: str, duration: float, progress: ProgressFn | None) -> bool:
@@ -301,7 +340,7 @@ def _handle_progress_line(line: str, duration: float, progress: ProgressFn | Non
         except ValueError:
             return True
         if progress and duration > 0:
-            progress(max(0.0, min(seconds / duration, 1.0)))
+            progress(max(0.0, min(seconds / duration, FINALIZING_PROGRESS)))
         return True
     return key in {
         "bitrate",
@@ -310,7 +349,6 @@ def _handle_progress_line(line: str, duration: float, progress: ProgressFn | Non
         "fps",
         "frame",
         "out_time",
-        "out_time_us",
         "progress",
         "speed",
         "stream_0_0_q",
@@ -320,6 +358,14 @@ def _handle_progress_line(line: str, duration: float, progress: ProgressFn | Non
 
 def _quote_cmd(cmd: list[str]) -> str:
     return " ".join(_quote_part(part) for part in cmd)
+
+
+def _kill_if_running(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 def _quote_part(part: str) -> str:
