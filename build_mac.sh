@@ -112,9 +112,19 @@ rm -rf build dist "${APP_NAME}.spec"
 
 APP="dist/${APP_NAME}.app"
 PLIST="$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DISPLAY_NAME" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$PLIST"
+set_plist_string() {
+  local key="$1"
+  local value="$2"
+  if /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :$key $value" "$PLIST"
+  else
+    /usr/libexec/PlistBuddy -c "Add :$key string $value" "$PLIST"
+  fi
+}
+
+set_plist_string "CFBundleDisplayName" "$DISPLAY_NAME"
+set_plist_string "CFBundleShortVersionString" "$APP_VERSION"
+set_plist_string "CFBundleVersion" "$APP_VERSION"
 
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
