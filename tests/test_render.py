@@ -45,7 +45,7 @@ class RenderJobTests(unittest.TestCase):
             ):
                 output = job.render(audio, None, video, None, root, log=lambda _line: None)
 
-            self.assertEqual(output, root / "episode_video.mp4")
+            self.assertEqual(output.resolve(), (root / "episode_video.mp4").resolve())
             self.assertEqual(output.read_bytes(), b"complete mp4")
             self.assertEqual(list(root.glob("*.partial.*")), [])
 
@@ -115,7 +115,7 @@ class RenderJobTests(unittest.TestCase):
                 output = job.render(audio, None, video, None, root, log=lambda _line: None)
 
             self.assertEqual(existing.read_bytes(), b"original mp4")
-            self.assertEqual(output, root / "episode_video_1.mp4")
+            self.assertEqual(output.resolve(), (root / "episode_video_1.mp4").resolve())
             self.assertEqual(output.read_bytes(), b"new mp4")
 
     def test_ffmpeg_does_not_read_stdin_or_overwrite_output(self) -> None:
