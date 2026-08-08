@@ -12,10 +12,15 @@ from tkinter import filedialog, messagebox, ttk
 from render import RenderCancelled, RenderJob
 
 
+APP_NAME = "Podcast Renderer"
+APP_VERSION = "1.1.0"
+APP_TITLE = f"{APP_NAME} {APP_VERSION}"
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Podcast Renderer")
+        self.title(APP_TITLE)
         icon = app_path("assets", "Podcast Renderer.ico")
         if icon.exists():
             try:
@@ -142,11 +147,14 @@ class App(tk.Tk):
             return
 
         self.log.delete("1.0", "end")
+        self._append(APP_TITLE)
         self._set_busy(True)
         self.render_started_at = time.monotonic()
         self.progress_value = 0.0
         self._draw_progress()
-        self.current_job = RenderJob()
+        self.current_job = RenderJob(
+            cancel_error=lambda line: self.log_queue.put(("cancel_error", line))
+        )
         threading.Thread(target=self._render_worker, args=(paths,), daemon=True).start()
 
     def _render_worker(self, paths: dict[str, str]) -> None:
@@ -209,6 +217,14 @@ class App(tk.Tk):
                         self.destroy()
                         return
                     messagebox.showerror("Render failed", text)
+                elif kind == "cancel_error":
+                    self._append("")
+                    self._append("ERROR: " + text)
+                    if self._closing:
+                        self._closing = False
+                        if self.cancel_button:
+                            self.cancel_button.configure(state="normal")
+                    messagebox.showerror("Cancel failed", text)
                 elif kind == "done":
                     self._append("")
                     self._append("DONE: " + text)

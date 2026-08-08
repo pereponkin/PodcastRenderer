@@ -9,7 +9,14 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
-from media_probe import ProbeError, StreamInfo, probe_audio, probe_video, require_tools
+from media_probe import (
+    PROBE_TIMEOUT_SECONDS,
+    ProbeError,
+    StreamInfo,
+    probe_audio,
+    probe_video,
+    require_tools,
+)
 
 
 LogFn = Callable[[str], None]
@@ -28,21 +35,29 @@ class RenderCancelled(RenderError):
 
 
 class RenderJob:
-    def __init__(self) -> None:
+    def __init__(self, cancel_error: LogFn | None = None) -> None:
         self._process: subprocess.Popen[str] | None = None
         self._cancelled = False
         self._lock = threading.Lock()
+        self._cancel_error = cancel_error
 
     def cancel(self) -> None:
         with self._lock:
             self._cancelled = True
             process = self._process
         if process and process.poll() is None:
+            kill_delay = CANCEL_KILL_TIMEOUT
             try:
                 process.terminate()
             except OSError:
-                return
-            watchdog = threading.Timer(CANCEL_KILL_TIMEOUT, _kill_if_running, args=(process,))
+                if process.poll() is not None:
+                    return
+                kill_delay = 0.0
+            watchdog = threading.Timer(
+                kill_delay,
+                _kill_if_running,
+                args=(process, self._cancel_error),
+            )
             watchdog.daemon = True
             watchdog.start()
 
@@ -66,7 +81,7 @@ class RenderJob:
         log(f"ffmpeg: {ffmpeg}")
         log(f"ffprobe: {ffprobe}")
 
-        audio_info = probe_audio(audio, ffprobe)
+        audio_info = probe_audio(audio, ffprobe, runner=self._run_probe)
         videos = {"INTRO": intro, "LOOP": loop, "OUTRO": outro}
         selected = {label: path for label, path in videos.items() if path}
         if not selected:
@@ -80,9 +95,9 @@ class RenderJob:
         elif not loop:
             raise RenderError("LOOP is required when using INTRO or OUTRO with multiple video files")
 
-        intro_info = probe_video(intro, "INTRO", ffprobe) if intro else None
-        loop_info = probe_video(loop, "LOOP", ffprobe) if loop else None
-        outro_info = probe_video(outro, "OUTRO", ffprobe) if outro else None
+        intro_info = probe_video(intro, "INTRO", ffprobe, runner=self._run_probe) if intro else None
+        loop_info = probe_video(loop, "LOOP", ffprobe, runner=self._run_probe) if loop else None
+        outro_info = probe_video(outro, "OUTRO", ffprobe, runner=self._run_probe) if outro else None
         if not loop_info:
             raise ProbeError("LOOP has zero duration")
 
@@ -208,6 +223,42 @@ class RenderJob:
             progress(1.0)
         log(f"Output: {output}")
         return output
+
+    def _run_probe(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        with self._lock:
+            if self._cancelled:
+                raise RenderCancelled("Render cancelled")
+            self._process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            process = self._process
+
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=PROBE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    if process.poll() is None:
+                        raise
+                process.communicate()
+                raise
+        finally:
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+
+        if self._cancelled:
+            raise RenderCancelled("Render cancelled")
+        return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
 
     def _run(
         self,
@@ -360,12 +411,18 @@ def _quote_cmd(cmd: list[str]) -> str:
     return " ".join(_quote_part(part) for part in cmd)
 
 
-def _kill_if_running(process: subprocess.Popen[str]) -> None:
+def _kill_if_running(process: subprocess.Popen[str], cancel_error: LogFn | None = None) -> None:
     if process.poll() is None:
         try:
             process.kill()
-        except OSError:
-            pass
+        except OSError as exc:
+            if process.poll() is not None:
+                return
+            message = f"Could not stop media process: {exc}"
+            if cancel_error:
+                cancel_error(message)
+                return
+            raise RenderError(message) from exc
 
 
 def _quote_part(part: str) -> str:

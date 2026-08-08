@@ -75,6 +75,7 @@ class MediaProbeTests(unittest.TestCase):
 
         command = run.call_args.args[0]
         self.assertTrue(Path(command[-1]).is_absolute())
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
     def test_tool_path_fallback_does_not_search_current_directory_implicitly(self) -> None:
         with patch("media_probe.shutil.which", return_value=None) as which:

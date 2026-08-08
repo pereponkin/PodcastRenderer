@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import render
 from media_probe import StreamInfo
-from render import RenderError, RenderJob, _handle_progress_line, choose_video_target
+from render import RenderCancelled, RenderError, RenderJob, _handle_progress_line, choose_video_target
 
 
 class RenderJobTests(unittest.TestCase):
@@ -240,6 +240,97 @@ class RenderJobTests(unittest.TestCase):
 
         self.assertTrue(process.terminated)
         self.assertTrue(killed.wait(0.5), "ffmpeg was not killed after the cancel timeout")
+
+    def test_cancel_reports_when_process_cannot_be_killed(self) -> None:
+        error_reported = threading.Event()
+        errors: list[str] = []
+
+        class UnstoppableProcess:
+            @staticmethod
+            def poll():
+                return None
+
+            @staticmethod
+            def terminate() -> None:
+                raise OSError("terminate denied")
+
+            @staticmethod
+            def kill() -> None:
+                raise OSError("kill denied")
+
+        def report_error(message: str) -> None:
+            errors.append(message)
+            error_reported.set()
+
+        job = RenderJob(cancel_error=report_error)
+        job._process = UnstoppableProcess()
+
+        job.cancel()
+
+        self.assertTrue(error_reported.wait(0.5), "cancel failure was not reported")
+        self.assertEqual(errors, ["Could not stop media process: kill denied"])
+
+    def test_cancel_during_ffprobe_stops_before_video_probes(self) -> None:
+        probe_started = threading.Event()
+        probe_stopped = threading.Event()
+
+        class BlockingProbe:
+            returncode = None
+
+            @staticmethod
+            def poll():
+                return 1 if probe_stopped.is_set() else None
+
+            @staticmethod
+            def terminate() -> None:
+                probe_stopped.set()
+
+            @staticmethod
+            def kill() -> None:
+                probe_stopped.set()
+
+            def communicate(self, timeout=None):
+                probe_started.set()
+                if not probe_stopped.wait(timeout):
+                    raise subprocess.TimeoutExpired("ffprobe", timeout)
+                self.returncode = 1
+                return "", ""
+
+        def probe_audio_through_runner(_path, _ffprobe, *, runner):
+            runner(["ffprobe", "audio.wav"])
+            raise AssertionError("Cancelled probe unexpectedly completed")
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            audio = root / "audio.wav"
+            loop = root / "loop.mp4"
+            audio.touch()
+            loop.touch()
+            job = RenderJob()
+            outcome: list[BaseException] = []
+
+            def render() -> None:
+                try:
+                    job.render(audio, None, loop, None, root, log=lambda _line: None)
+                except BaseException as exc:
+                    outcome.append(exc)
+
+            with (
+                patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
+                patch("render.probe_audio", side_effect=probe_audio_through_runner),
+                patch("render.probe_video") as probe_video,
+                patch("render.subprocess.Popen", return_value=BlockingProbe()),
+            ):
+                worker = threading.Thread(target=render)
+                worker.start()
+                self.assertTrue(probe_started.wait(0.5), "ffprobe did not start")
+                job.cancel()
+                worker.join(0.5)
+
+        self.assertFalse(worker.is_alive(), "render worker did not stop after cancellation")
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], RenderCancelled)
+        probe_video.assert_not_called()
 
     def test_progress_waits_below_complete_while_ffmpeg_finalizes(self) -> None:
         updates: list[float] = []

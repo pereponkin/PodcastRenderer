@@ -1,9 +1,10 @@
+import queue
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from main import App, find_video_siblings
+from main import APP_TITLE, APP_VERSION, App, find_video_siblings
 
 
 class VideoSiblingTests(unittest.TestCase):
@@ -37,6 +38,12 @@ class VideoSiblingTests(unittest.TestCase):
         self.assertEqual(siblings, {})
 
 
+class VersionTests(unittest.TestCase):
+    def test_window_title_contains_current_version(self) -> None:
+        self.assertEqual(APP_VERSION, "1.1.0")
+        self.assertEqual(APP_TITLE, "Podcast Renderer 1.1.0")
+
+
 class WindowLifecycleTests(unittest.TestCase):
     def test_close_cancels_active_render_before_destroying_window(self) -> None:
         app = object.__new__(App)
@@ -60,6 +67,25 @@ class WindowLifecycleTests(unittest.TestCase):
             text = App._progress_text(app, 0.999)
 
         self.assertEqual(text, "00:10 elapsed / finalizing")
+
+    def test_cancel_failure_is_reported_and_window_remains_open(self) -> None:
+        app = object.__new__(App)
+        app.log_queue = queue.Queue()
+        app.log_queue.put(("cancel_error", "Could not stop media process: denied"))
+        app._append = Mock()
+        app._closing = True
+        app.cancel_button = Mock()
+        app.after = Mock()
+
+        with patch("main.messagebox.showerror") as showerror:
+            App._drain_log(app)
+
+        self.assertFalse(app._closing)
+        app.cancel_button.configure.assert_called_once_with(state="normal")
+        showerror.assert_called_once_with(
+            "Cancel failed",
+            "Could not stop media process: denied",
+        )
 
 
 if __name__ == "__main__":

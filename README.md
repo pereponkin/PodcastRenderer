@@ -165,8 +165,8 @@ runtime files. See `THIRD_PARTY_NOTICES.md` before redistributing binaries.
 ## Notes
 
 - Paths with spaces, Cyrillic, and special characters are passed to FFmpeg safely through Python `subprocess` argument lists.
-- Rendering runs as one FFmpeg process and can be cancelled from the GUI.
-- Closing the window cancels and waits for an active FFmpeg process.
+- Media analysis and rendering can be cancelled from the GUI; the active ffprobe or FFmpeg process is terminated.
+- Closing the window cancels and waits for the active media process.
 - Each ffprobe analysis is limited to 15 seconds, so an unreadable source cannot leave the app waiting indefinitely.
 - FFmpeg renders to a hidden partial MP4. Failed or cancelled partial files are removed, and the final name is published only after success.
 - If rendering fails, the GUI log shows the command and FFmpeg output.

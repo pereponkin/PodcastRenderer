@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -15,6 +16,7 @@ class ProbeError(RuntimeError):
 
 
 PROBE_TIMEOUT_SECONDS = 15.0
+ProbeRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 
 @dataclass(frozen=True)
@@ -75,14 +77,20 @@ def require_tools() -> tuple[str, str]:
     return ffmpeg, ffprobe
 
 
-def probe(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
-    return _probe(path, ffprobe, preferred_stream_type=None)
+def probe(
+    path: str | Path,
+    ffprobe: str | None = None,
+    *,
+    runner: ProbeRunner | None = None,
+) -> StreamInfo:
+    return _probe(path, ffprobe, preferred_stream_type=None, runner=runner)
 
 
 def _probe(
     path: str | Path,
     ffprobe: str | None,
     preferred_stream_type: str | None,
+    runner: ProbeRunner | None,
 ) -> StreamInfo:
     media_path = Path(path).expanduser().resolve()
     if not media_path.exists():
@@ -96,13 +104,13 @@ def _probe(
         "json",
         "-show_format",
         "-show_streams",
-        "-nostdin",
         str(media_path),
     ]
     try:
-        result = subprocess.run(
+        result = runner(cmd) if runner else subprocess.run(
             cmd,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -139,8 +147,13 @@ def _probe(
     )
 
 
-def probe_audio(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
-    info = _probe(path, ffprobe, preferred_stream_type="audio")
+def probe_audio(
+    path: str | Path,
+    ffprobe: str | None = None,
+    *,
+    runner: ProbeRunner | None = None,
+) -> StreamInfo:
+    info = _probe(path, ffprobe, preferred_stream_type="audio", runner=runner)
     if not info.has_audio:
         raise ProbeError(f"AUDIO has no readable audio stream: {path}")
     if info.duration <= 0:
@@ -148,8 +161,14 @@ def probe_audio(path: str | Path, ffprobe: str | None = None) -> StreamInfo:
     return info
 
 
-def probe_video(path: str | Path, label: str, ffprobe: str | None = None) -> StreamInfo:
-    info = _probe(path, ffprobe, preferred_stream_type="video")
+def probe_video(
+    path: str | Path,
+    label: str,
+    ffprobe: str | None = None,
+    *,
+    runner: ProbeRunner | None = None,
+) -> StreamInfo:
+    info = _probe(path, ffprobe, preferred_stream_type="video", runner=runner)
     if not info.has_video:
         raise ProbeError(f"{label} has no readable video stream: {path}")
     if info.duration <= 0:
