@@ -32,7 +32,18 @@ vendor/macos/ffmpeg
 vendor/macos/ffprobe
 ```
 
-The Windows binaries used during local testing were from Gyan FFmpeg builds:
+Automated release packages use pinned Shaka Project static FFmpeg binaries:
+
+- Binary release: https://github.com/shaka-project/static-ffmpeg-binaries/releases/tag/n8.1.2-1
+- FFmpeg version: 8.1.2
+- The downloaded binaries are verified against SHA-256 values recorded in the
+  build scripts before packaging.
+
+See `FFMPEG_SOURCE_OFFER.md` for corresponding source and build information.
+The complete GPLv3 license is included as `licenses/GPL-3.0.txt`.
+
+The older Windows binaries used during local testing were from Gyan FFmpeg
+builds:
 
 - Build site: https://www.gyan.dev/ffmpeg/builds/
 - Tested version string:
@@ -83,3 +94,11 @@ under the Python Software Foundation License and related historical licenses.
 
 The GUI uses Python `tkinter`, which depends on Tcl/Tk. Standalone GUI builds
 may contain Tcl/Tk runtime files.
+
+## Inno Setup
+
+- Project: https://jrsoftware.org/isinfo.php
+- Source code: https://github.com/jrsoftware/issrc
+
+The Windows installer is generated with Inno Setup. Its license text is
+included as `licenses/Inno-Setup-LICENSE.txt`.

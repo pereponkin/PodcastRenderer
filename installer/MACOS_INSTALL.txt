@@ -1,0 +1,32 @@
+PODCAST RENDERER FOR macOS
+
+Installation
+1. Drag PodcastRenderer.app to the Applications shortcut in this window.
+2. Open Applications and try to start PodcastRenderer.
+3. Because this free build has no paid Apple Developer ID, macOS may say that
+   Apple could not verify the app. Click Done; do not move the app to Trash.
+4. Open System Settings > Privacy & Security, scroll to Security, and click
+   Open Anyway next to PodcastRenderer. Confirm with Open and, if requested,
+   your Mac password.
+5. This exception is saved. Future launches work with a normal double-click.
+
+Only use packages downloaded from:
+https://github.com/pereponkin/PodcastRenderer/releases
+
+You can compare the file SHA-256 with SHA256SUMS.txt on the release page.
+The app processes all selected media locally and does not upload it.
+
+---
+
+Установка
+1. Перетащите PodcastRenderer.app на ярлык Applications в этом окне.
+2. Откройте Applications и попробуйте запустить PodcastRenderer.
+3. Из-за отсутствия платного Apple Developer ID macOS может сообщить, что
+   Apple не удалось проверить приложение. Нажмите «Готово» и не перемещайте
+   приложение в Корзину.
+4. Откройте «Системные настройки» > «Конфиденциальность и безопасность»,
+   прокрутите до раздела «Безопасность» и нажмите «Всё равно открыть» рядом с
+   PodcastRenderer. Подтвердите запуск и при необходимости введите пароль Mac.
+5. Исключение сохранится, дальше приложение запускается обычным двойным кликом.
+
+Скачивайте сборки только с официальной страницы релизов, указанной выше.

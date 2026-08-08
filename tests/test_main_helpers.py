@@ -40,8 +40,8 @@ class VideoSiblingTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_window_title_contains_current_version(self) -> None:
-        self.assertEqual(APP_VERSION, "1.1.0")
-        self.assertEqual(APP_TITLE, "Podcast Renderer 1.1.0")
+        self.assertEqual(APP_VERSION, "1.2.0")
+        self.assertEqual(APP_TITLE, "Podcast Renderer 1.2.0")
 
 
 class WindowLifecycleTests(unittest.TestCase):

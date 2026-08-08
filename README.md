@@ -6,7 +6,60 @@ Small Python GUI app that renders a YouTube-compatible MP4 from one audio file a
 
 The `Audio` source may also be a common video container such as MP4, MOV, MKV, AVI, WebM, MPEG, TS, or WMV. Only its first audio stream is used.
 
-## Run on Windows
+## Install Without Python
+
+Download the files only from the official
+[Podcast Renderer releases](https://github.com/pereponkin/PodcastRenderer/releases)
+page. Release packages already contain Python, Tkinter, FFmpeg, and ffprobe.
+Users do not need Python, Homebrew, FFmpeg, or programming tools.
+
+### Windows
+
+1. Download `PodcastRenderer-<version>-Windows-Setup.exe` from the latest
+   release.
+2. Open it and follow the installer. Administrator rights are not required.
+3. Start **Podcast Renderer** from the Start menu.
+
+The installer is intentionally unsigned because this project does not use a
+paid code-signing certificate. Windows SmartScreen may show **Windows protected
+your PC**. When the file came from the official release page above:
+
+1. Click **More info**.
+2. Check that the app name is `PodcastRenderer-<version>-Windows-Setup.exe`.
+3. Click **Run anyway**.
+
+`PodcastRenderer-<version>-Windows-Portable.zip` is also available. Extract it
+to a normal folder and run `PodcastRenderer.exe`; no installation is needed.
+
+### macOS
+
+Choose the package for the Mac processor:
+
+- `PodcastRenderer-<version>-macOS-Apple-Silicon.dmg` for M1, M2, M3,
+  M4, and newer Apple chips;
+- `PodcastRenderer-<version>-macOS-Intel.dmg` for older Intel Macs.
+
+Then:
+
+1. Open the DMG and drag `PodcastRenderer.app` to **Applications**.
+2. Open **Applications** and try to launch PodcastRenderer once.
+3. macOS may say that Apple could not verify the app. Click **Done**; do not
+   move it to Trash.
+4. Open **System Settings > Privacy & Security** and scroll to **Security**.
+5. Click **Open Anyway** next to PodcastRenderer, then confirm **Open** and
+   enter the Mac password if requested.
+
+macOS saves this exception, so later launches use a normal double-click. This
+warning appears because the free build has no paid Apple Developer ID, not
+because the app requires Python or Terminal. Do not disable Gatekeeper and do
+not run `sudo` or `xattr` commands. The DMG also contains `INSTALL.txt` with the
+same instructions.
+
+Every release includes `SHA256SUMS.txt`. Advanced users can compare a downloaded
+file's SHA-256 with that list. The app processes selected media locally and does
+not upload it.
+
+## Run From Source on Windows
 
 1. Install Python 3 from <https://www.python.org/downloads/windows/>.
 2. Install FFmpeg 5.1 or newer:
@@ -20,7 +73,7 @@ The `Audio` source may also be a common video container such as MP4, MOV, MKV, A
 python main.py
 ```
 
-## Run on macOS
+## Run From Source on macOS
 
 1. Install Python 3 with Tkinter from <https://www.python.org/downloads/macos/> or with Homebrew:
 
@@ -80,37 +133,27 @@ python -m PyInstaller --onefile --windowed --name PodcastRenderer main.py
 
 The executable will be in `dist\PodcastRenderer.exe`. FFmpeg still needs to be installed on `PATH`, or you can place `ffmpeg.exe` and `ffprobe.exe` next to the executable.
 
-## Build Self-Contained Windows EXE
+## Build Windows Packages
 
-Put Windows FFmpeg binaries here:
-
-```text
-vendor/windows/ffmpeg.exe
-vendor/windows/ffprobe.exe
-vendor/windows/ffmpeg.sha256
-vendor/windows/ffprobe.sha256
-```
-
-Then run in PowerShell:
+Download the pinned, verified Windows FFmpeg binaries:
 
 ```powershell
-.\build_windows.ps1
+.\scripts\fetch_ffmpeg_windows.ps1
 ```
 
-The build stops if either binary does not match its recorded SHA-256. After a
-deliberate FFmpeg update, regenerate both `.sha256` files from the trusted new
-binaries before building.
+Install [Inno Setup 6 or 7](https://jrsoftware.org/isdl.php), then run:
 
-The single-file executable will be:
+```powershell
+.\build_windows_installer.ps1
+```
+
+The build verifies FFmpeg and creates:
 
 ```text
 dist\PodcastRenderer.exe
-dist\PodcastRenderer-windows.zip
-dist\THIRD_PARTY_NOTICES.md
+dist\PodcastRenderer-Windows-Portable.zip
+dist\PodcastRenderer-Setup.exe
 ```
-
-Send `dist\PodcastRenderer-windows.zip` when you redistribute the bundled
-Windows build. It contains the executable and third-party notices.
 
 macOS:
 
@@ -121,23 +164,14 @@ python3 -m PyInstaller --windowed --name PodcastRenderer main.py
 
 The app bundle will be in `dist/PodcastRenderer.app`. FFmpeg still needs to be installed on `PATH`, or placed inside/next to the app and resolved by your launch setup.
 
-## Build Self-Contained macOS App
+## Build macOS Packages
 
-On a Mac, put self-contained macOS `ffmpeg` and `ffprobe` binaries here:
-
-```text
-vendor/macos/ffmpeg
-vendor/macos/ffprobe
-vendor/macos/ffmpeg.sha256
-vendor/macos/ffprobe.sha256
-```
-
-Then run:
+Run these commands on the target architecture Mac. The fetch script downloads
+the pinned static binaries for Apple Silicon or Intel automatically and verifies
+their SHA-256 values:
 
 ```bash
-chmod +x vendor/macos/ffmpeg vendor/macos/ffprobe
-shasum -a 256 vendor/macos/ffmpeg | awk '{print $1}' > vendor/macos/ffmpeg.sha256
-shasum -a 256 vendor/macos/ffprobe | awk '{print $1}' > vendor/macos/ffprobe.sha256
+bash scripts/fetch_ffmpeg_macos.sh
 bash build_mac.sh
 ```
 
@@ -145,14 +179,28 @@ The script builds:
 
 ```text
 dist/PodcastRenderer.app
-dist/PodcastRenderer-macOS.zip
-dist/THIRD_PARTY_NOTICES.md
+dist/PodcastRenderer-<version>-macOS-Apple-Silicon.dmg
+dist/PodcastRenderer-<version>-macOS-Apple-Silicon.zip
 ```
 
-Send `dist/PodcastRenderer-macOS.zip` to the Mac user. It contains the app and
-third-party notices. If `vendor/macos` is missing, the script can use `ffmpeg`
-and `ffprobe` from `PATH`, but Homebrew binaries may require Homebrew libraries
-on the target Mac.
+Intel builds use `Intel` instead of `Apple-Silicon` in the file names. The app
+is ad-hoc signed for bundle integrity but is not Developer ID signed or
+notarized.
+
+## Automated Releases
+
+Pushing a version tag such as `v1.2.0` starts `.github/workflows/release.yml`.
+The tag must match `APP_VERSION` in `main.py`. GitHub Actions then:
+
+1. runs all unit tests on Windows, Apple Silicon macOS, and Intel macOS;
+2. builds the Windows installer and portable archive;
+3. builds Apple Silicon and Intel DMG/ZIP packages;
+4. generates SHA-256 checksums;
+5. publishes every package and notice as a GitHub Release.
+
+The release workflow downloads FFmpeg `n8.1.2-1` and Inno Setup `7.0.2` from
+immutable upstream releases and verifies their recorded SHA-256 values before
+using them.
 
 ## License and Third-Party Notices
 
@@ -162,7 +210,8 @@ reserved by their copyright holder.
 
 Runtime operation depends on FFmpeg/ffprobe. Standalone builds may bundle
 FFmpeg/ffprobe, PyInstaller bootloader files, Python runtime files, and Tcl/Tk
-runtime files. See `THIRD_PARTY_NOTICES.md` before redistributing binaries.
+runtime files. Redistributable packages include `THIRD_PARTY_NOTICES.md`,
+`FFMPEG_SOURCE_OFFER.md`, and the applicable license texts from `licenses/`.
 
 ## Notes
 
@@ -179,5 +228,5 @@ runtime files. See `THIRD_PARTY_NOTICES.md` before redistributing binaries.
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs the test suite on Windows and macOS for every push to
-`main` and every pull request.
+GitHub Actions runs the test suite on Windows, Apple Silicon macOS, and Intel
+macOS for every push to `main` and every pull request.

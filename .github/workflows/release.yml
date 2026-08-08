@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  build-windows:
+    name: Build Windows packages
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Verify tag version
+        shell: pwsh
+        run: |
+          $appVersion = python -c "from main import APP_VERSION; print(APP_VERSION)"
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart("v")
+          if ($appVersion -ne $tagVersion) {
+            throw "Tag $env:GITHUB_REF_NAME does not match APP_VERSION $appVersion"
+          }
+
+      - name: Download verified FFmpeg binaries
+        shell: pwsh
+        run: .\scripts\fetch_ffmpeg_windows.ps1
+
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe"
+          $expected = "5AD54CA3DEF786F8F4212552E54CC6D8D61329E2D24A1CFEE0571D42C2684FF1"
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+          $destination = Join-Path $env:RUNNER_TEMP "InnoSetup"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $installer
+          $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "Inno Setup SHA-256 mismatch"
+          }
+          $process = Start-Process -FilePath $installer -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/CURRENTUSER",
+            "/DIR=$destination"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Inno Setup installation failed with exit code $($process.ExitCode)"
+          }
+          "ISCC_PATH=$(Join-Path $destination 'ISCC.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build EXE and installer
+        shell: pwsh
+        run: .\build_windows_installer.ps1 -IsccPath $env:ISCC_PATH
+
+      - name: Give packages versioned names
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          Move-Item "dist\PodcastRenderer-Setup.exe" "dist\PodcastRenderer-$version-Windows-Setup.exe"
+          Move-Item "dist\PodcastRenderer-Windows-Portable.zip" "dist\PodcastRenderer-$version-Windows-Portable.zip"
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: |
+            dist/PodcastRenderer-*-Windows-Setup.exe
+            dist/PodcastRenderer-*-Windows-Portable.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    name: Build macOS ${{ matrix.label }} packages
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: Apple Silicon
+            artifact: release-macos-arm64
+          - runner: macos-15-intel
+            label: Intel
+            artifact: release-macos-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Verify tag version
+        shell: bash
+        run: |
+          app_version="$(python -c 'from main import APP_VERSION; print(APP_VERSION)')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$app_version" != "$tag_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match APP_VERSION $app_version" >&2
+            exit 1
+          fi
+
+      - name: Download verified FFmpeg binaries
+        shell: bash
+        run: bash scripts/fetch_ffmpeg_macos.sh
+
+      - name: Build app and disk image
+        shell: bash
+        run: bash build_mac.sh
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/PodcastRenderer-*-macOS-*.dmg
+            dist/PodcastRenderer-*-macOS-*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download release packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Add notices and checksums
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp THIRD_PARTY_NOTICES.md FFMPEG_SOURCE_OFFER.md release-assets/
+          zip -r "release-assets/PodcastRenderer-$version-Licenses.zip" licenses
+          cd release-assets
+          sha256sum PodcastRenderer-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag \
+            --generate-notes \
+            --title "Podcast Renderer ${GITHUB_REF_NAME#v}"

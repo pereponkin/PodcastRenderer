@@ -13,7 +13,7 @@ from render import RenderCancelled, RenderJob
 
 
 APP_NAME = "Podcast Renderer"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
 
 

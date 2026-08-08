@@ -12,6 +12,8 @@ $ffmpegHash = Join-Path $PSScriptRoot "vendor\windows\ffmpeg.sha256"
 $ffprobeHash = Join-Path $PSScriptRoot "vendor\windows\ffprobe.sha256"
 $icon = Join-Path $PSScriptRoot "assets\Podcast Renderer.ico"
 $notices = Join-Path $PSScriptRoot "THIRD_PARTY_NOTICES.md"
+$sourceOffer = Join-Path $PSScriptRoot "FFMPEG_SOURCE_OFFER.md"
+$licenses = Join-Path $PSScriptRoot "licenses"
 $buildRequirements = Join-Path $PSScriptRoot "requirements-build.txt"
 
 function Assert-FileHash {
@@ -45,6 +47,12 @@ if (-not (Test-Path -LiteralPath $icon)) {
 if (-not (Test-Path -LiteralPath $notices)) {
     throw "Missing $notices"
 }
+if (-not (Test-Path -LiteralPath $sourceOffer)) {
+    throw "Missing $sourceOffer"
+}
+if (-not (Test-Path -LiteralPath $licenses -PathType Container)) {
+    throw "Missing $licenses"
+}
 if (-not (Test-Path -LiteralPath $buildRequirements)) {
     throw "Missing $buildRequirements"
 }
@@ -63,26 +71,71 @@ $PSNativeCommandUseErrorActionPreference = $nativeErrors
 Remove-Item -Recurse -Force "build", "dist" -ErrorAction SilentlyContinue
 Remove-Item -Force "$appName.spec" -ErrorAction SilentlyContinue
 
+$versionLine = Select-String -LiteralPath "main.py" -Pattern '^APP_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$'
+if (-not $versionLine) {
+    throw "Could not read APP_VERSION from main.py"
+}
+$appVersion = $versionLine.Matches[0].Groups[1].Value
+$versionParts = @($appVersion.Split('.') | ForEach-Object { [int]$_ }) + @(0)
+$versionTuple = ($versionParts[0..3] -join ", ")
+$versionFile = Join-Path $PSScriptRoot "build\windows-version-info.txt"
+New-Item -ItemType Directory -Path (Split-Path -Parent $versionFile) -Force | Out-Null
+@"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($versionTuple),
+    prodvers=($versionTuple),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'pereponkin'),
+         StringStruct('FileDescription', 'Podcast Renderer'),
+         StringStruct('FileVersion', '$appVersion'),
+         StringStruct('InternalName', 'PodcastRenderer'),
+         StringStruct('OriginalFilename', 'PodcastRenderer.exe'),
+         StringStruct('ProductName', 'Podcast Renderer'),
+         StringStruct('ProductVersion', '$appVersion')]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"@ | Set-Content -LiteralPath $versionFile -Encoding utf8
+
 python -m PyInstaller `
     --noconfirm `
     --onefile `
     --windowed `
     --name $appName `
     --icon "$icon" `
+    --version-file "$versionFile" `
     --add-binary "$ffmpeg;bin" `
     --add-binary "$ffprobe;bin" `
     --add-data "$icon;assets" `
     --add-data "$notices;." `
+    --add-data "$sourceOffer;." `
+    --add-data "$licenses;licenses" `
     main.py
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed"
 }
 
-Copy-Item -LiteralPath $notices -Destination "dist\THIRD_PARTY_NOTICES.md" -Force
-Compress-Archive `
-    -LiteralPath "dist\$appName.exe", "dist\THIRD_PARTY_NOTICES.md" `
-    -DestinationPath "dist\$appName-windows.zip" `
-    -Force
+$portableDir = Join-Path $PSScriptRoot "dist\PodcastRenderer-Windows-Portable"
+New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+Copy-Item -LiteralPath "dist\$appName.exe" -Destination $portableDir -Force
+Copy-Item -LiteralPath $notices -Destination $portableDir -Force
+Copy-Item -LiteralPath $sourceOffer -Destination $portableDir -Force
+Copy-Item -LiteralPath $licenses -Destination $portableDir -Recurse -Force
+Compress-Archive -Path "$portableDir\*" -DestinationPath "dist\PodcastRenderer-Windows-Portable.zip" -Force
+Remove-Item -LiteralPath $portableDir -Recurse -Force
 
 Remove-Item -Recurse -Force "build" -ErrorAction SilentlyContinue
 Remove-Item -Force "$appName.spec" -ErrorAction SilentlyContinue
@@ -92,6 +145,6 @@ Write-Host "Done."
 Write-Host "EXE:"
 Write-Host "  dist\$appName.exe"
 Write-Host "Notices:"
-Write-Host "  dist\THIRD_PARTY_NOTICES.md"
-Write-Host "Zip to send:"
-Write-Host "  dist\$appName-windows.zip"
+Write-Host "  included in the portable archive"
+Write-Host "Portable archive:"
+Write-Host "  dist\PodcastRenderer-Windows-Portable.zip"
