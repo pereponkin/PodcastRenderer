@@ -13,7 +13,7 @@ from render import RenderCancelled, RenderJob
 
 
 APP_NAME = "Podcast Renderer"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
 
 
@@ -27,10 +27,11 @@ class App(tk.Tk):
                 self.iconbitmap(str(icon))
             except tk.TclError:
                 pass
-        self.geometry("820x500")
-        self.minsize(720, 420)
+        self.geometry("820x520")
+        self.minsize(720, 440)
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.entries: dict[str, tk.StringVar] = {}
+        self.audio_format = tk.StringVar(value="aac")
         self.render_button: ttk.Button | None = None
         self.progress_canvas: tk.Canvas | None = None
         self.cancel_button: ttk.Button | None = None
@@ -44,7 +45,7 @@ class App(tk.Tk):
 
     def _build(self) -> None:
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(6, weight=1)
+        self.rowconfigure(7, weight=1)
 
         filetypes = {
             "AUDIO": [
@@ -83,18 +84,25 @@ class App(tk.Tk):
         ttk.Entry(self, textvariable=output).grid(row=4, column=1, padx=6, pady=6, sticky="ew")
         ttk.Button(self, text="Choose", command=self._choose_output).grid(row=4, column=2, padx=10, pady=6)
 
+        ttk.Label(self, text="Audio output:").grid(row=5, column=0, padx=10, pady=6, sticky="w")
+        audio_modes = ttk.Frame(self)
+        audio_modes.grid(row=5, column=1, padx=6, pady=6, sticky="w")
+        ttk.Radiobutton(audio_modes, text="AAC", variable=self.audio_format, value="aac").pack(side="left")
+        ttk.Radiobutton(audio_modes, text="ALAC (lossless)", variable=self.audio_format,
+                        value="alac").pack(side="left", padx=(18, 0))
+
         self.render_button = ttk.Button(self, text="Render", command=self._render)
-        self.render_button.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.render_button.grid(row=6, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
         self.progress_canvas = tk.Canvas(self, height=26, highlightthickness=1, highlightbackground="#9a9a9a")
         self.progress_canvas.bind("<Configure>", lambda _event: self._draw_progress())
         self.cancel_button = ttk.Button(self, text="Cancel", command=self._cancel, state="disabled")
-        self.cancel_button.grid(row=5, column=2, padx=10, pady=10, sticky="ew")
+        self.cancel_button.grid(row=6, column=2, padx=10, pady=10, sticky="ew")
 
         self.log = tk.Text(self, wrap="word", height=14)
-        self.log.grid(row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="nsew")
+        self.log.grid(row=7, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="nsew")
         scroll = ttk.Scrollbar(self, orient="vertical", command=self.log.yview)
-        scroll.grid(row=6, column=3, pady=(0, 10), sticky="ns")
+        scroll.grid(row=7, column=3, pady=(0, 10), sticky="ns")
         self.log.configure(yscrollcommand=scroll.set)
 
     def _choose(self, key: str, filetypes: list[tuple[str, str]]) -> None:
@@ -155,9 +163,9 @@ class App(tk.Tk):
         self.current_job = RenderJob(
             cancel_error=lambda line: self.log_queue.put(("cancel_error", line))
         )
-        threading.Thread(target=self._render_worker, args=(paths,), daemon=True).start()
+        threading.Thread(target=self._render_worker, args=(paths, self.audio_format.get()), daemon=True).start()
 
-    def _render_worker(self, paths: dict[str, str]) -> None:
+    def _render_worker(self, paths: dict[str, str], audio_format: str) -> None:
         try:
             assert self.current_job is not None
             output = self.current_job.render(
@@ -168,6 +176,7 @@ class App(tk.Tk):
                 paths["OUTPUT"],
                 log=lambda line: self.log_queue.put(("log", line)),
                 progress=lambda value: self.log_queue.put(("progress", str(value))),
+                audio_format=audio_format,
             )
         except RenderCancelled as exc:
             self.log_queue.put(("cancelled", str(exc)))
@@ -249,7 +258,7 @@ class App(tk.Tk):
                 self.render_button.grid()
         if self.progress_canvas:
             if busy:
-                self.progress_canvas.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+                self.progress_canvas.grid(row=6, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
             else:
                 self.progress_canvas.grid_remove()
         if self.cancel_button:

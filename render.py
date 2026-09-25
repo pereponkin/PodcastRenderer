@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from fractions import Fraction
@@ -21,7 +23,11 @@ from media_probe import (
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[float], None]
-VIDEO_BITRATE = "2048k"
+VIDEO_CRF = 20
+VIDEO_MAXRATE = "8000k"
+VIDEO_BUFSIZE = "64000k"
+VIDEO_PRESET = "veryslow"
+GOP_SECONDS = 4
 CANCEL_KILL_TIMEOUT = 5.0
 FINALIZING_PROGRESS = 0.999
 
@@ -70,6 +76,7 @@ class RenderJob:
         output_dir: str | Path | None = None,
         log: LogFn = print,
         progress: ProgressFn | None = None,
+        audio_format: str = "aac",
     ) -> Path:
         audio = Path(audio_path).expanduser().resolve()
         intro = Path(intro_path).expanduser().resolve() if intro_path else None
@@ -104,17 +111,7 @@ class RenderJob:
         video_infos = [info for info in (intro_info, loop_info, outro_info) if info]
         target_width, target_height, target_fps = choose_video_target(video_infos)
         target_fps_text = _format_frame_rate(target_fps)
-        copy_audio = (audio_info.audio_codec or "").lower() == "aac"
-        audio_codec_args = ["-c:a", "copy"] if copy_audio else [
-            "-c:a",
-            "aac",
-            "-b:a",
-            "320k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-        ]
+        audio_codec_args, audio_decision = _audio_output_args(audio_info, audio_format)
 
         intro_duration = intro_info.duration if intro_info else 0.0
         outro_duration = outro_info.duration if outro_info else 0.0
@@ -131,90 +128,119 @@ class RenderJob:
         if outro_info:
             log(f"OUTRO duration: {outro_info.duration:.3f}s")
         log(f"Output video: {target_width}x{target_height} at {target_fps_text} fps")
-        log(f"Video bitrate: {VIDEO_BITRATE}")
-        log("Audio: stream copy (AAC)" if copy_audio else "Audio: AAC 48000 Hz, 320k, stereo")
+        log(f"Video rate control: CRF {VIDEO_CRF}, maxrate {VIDEO_MAXRATE}, "
+            f"bufsize {VIDEO_BUFSIZE}")
+        log(f"Video encoder: libx264 {VIDEO_PRESET}, closed GOP every {GOP_SECONDS}s")
+        log(f"Audio: {audio_decision}")
         log(f"Output folder: {partial_output.parent}")
-        log("Step 1/1: rendering final MP4")
-
-        input_args: list[str] = []
-        filters: list[str] = []
-        labels: list[str] = []
-        next_input_index = 0
-
-        def add_video_input(path: Path, duration: float, stream_loop: bool = False) -> None:
-            nonlocal next_input_index
-            if stream_loop:
-                input_args.extend(["-stream_loop", "-1"])
-            input_index = next_input_index
-            next_input_index += 1
-            input_args.extend(["-i", str(path)])
-            out_label = f"v{len(labels)}"
-            filters.append(
-                f"[{input_index}:v]{_video_filter(target_width, target_height, target_fps_text)},"
-                f"trim=duration={duration:.6f},"
-                f"setpts=PTS-STARTPTS[{out_label}]"
-            )
-            labels.append(f"[{out_label}]")
-
-        if intro and intro_info:
-            add_video_input(intro, intro_info.duration)
-        assert loop is not None
-        add_video_input(loop, middle_duration, stream_loop=True)
-        if outro and outro_info:
-            add_video_input(outro, outro_info.duration)
-
-        audio_index = next_input_index
-        input_args.extend(["-i", str(audio)])
-        if len(labels) == 1:
-            video_output = labels[0]
-            filter_complex = ";".join(filters)
-        else:
-            video_output = "[v]"
-            concat = "".join(labels) + f"concat=n={len(labels)}:v=1:a=0[v]"
-            filter_complex = ";".join(filters + [concat])
-
-        cmd = [
-            ffmpeg,
-            "-n",
-            "-nostdin",
-            "-hide_banner",
-            *input_args,
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            video_output,
-            "-map",
-            f"{audio_index}:a:0",
-            "-t",
-            f"{audio_info.duration:.6f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-profile:v",
-            "high",
-            "-pix_fmt",
-            "yuv420p",
-            "-b:v",
-            VIDEO_BITRATE,
-            "-maxrate",
-            VIDEO_BITRATE,
-            "-bufsize",
-            "4096k",
-            "-r",
-            target_fps_text,
-            "-fps_mode",
-            "cfr",
-            *audio_codec_args,
-            "-movflags",
-            "+faststart",
-            "-progress",
-            "pipe:1",
-            "-nostats",
-            str(partial_output),
+        video_filter = (
+            f"setpts=PTS-STARTPTS,{_video_filter(target_width, target_height, target_fps_text)},"
+            f"setpts=N/({target_fps_text}*TB)"
+        )
+        video_options = [
+            "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", video_filter,
+            "-r", target_fps_text, "-fps_mode", "cfr",
         ]
+        encoder_options = [
+            *_video_encoder_args(
+                target_fps,
+                ["-crf", str(VIDEO_CRF), "-maxrate", VIDEO_MAXRATE,
+                 "-bufsize", VIDEO_BUFSIZE],
+            ),
+            "-progress", "pipe:1", "-nostats",
+        ]
+
+        def stage(start: float, end: float) -> ProgressFn | None:
+            return (lambda value: progress(start + (end - start) * value)) if progress else None
+
+        def encode(source: Path, destination: Path, duration: float,
+                   start: float, end: float, frames: int | None = None) -> int:
+            cmd = [ffmpeg, "-n", "-nostdin", "-hide_banner", "-i", str(source),
+                   *video_options]
+            if frames is not None:
+                cmd.extend(["-frames:v", str(frames)])
+            cmd.extend([*encoder_options, str(destination)])
+            count = self._run(cmd, duration, log, stage(start, end))
+            if count <= 0 or (frames is not None and count != frames):
+                raise RenderError(f"Unexpected frame count while encoding {source}: {count}")
+            if progress:
+                progress(end)
+            return count
+
         try:
-            self._run(cmd, audio_info.duration, log, progress)
+            with tempfile.TemporaryDirectory(prefix="podcast-renderer-") as temporary:
+                work = Path(temporary)
+                assert loop is not None
+                log("Step 1: measuring one loop period")
+                count_cmd = [
+                    ffmpeg, "-n", "-nostdin", "-hide_banner", "-i", str(loop),
+                    *video_options, "-progress", "pipe:1", "-nostats", "-f", "null", "-",
+                ]
+                period_frames = self._run(count_cmd, loop_info.duration, log, stage(0.0, 0.08))
+                if period_frames <= 0:
+                    raise RenderError("LOOP has no frames after video conversion")
+                if progress:
+                    progress(0.08)
+
+                parts: list[tuple[str, int]] = []
+                intro_frames = 0
+                if intro and intro_info:
+                    log("Step 2: encoding intro")
+                    intro_frames = encode(intro, work / "intro.mp4", intro_info.duration, 0.08, 0.22)
+                    parts.append(("intro.mp4", intro_frames))
+                outro_frames = 0
+                if outro and outro_info:
+                    log("Step 3: encoding outro")
+                    outro_frames = encode(outro, work / "outro.mp4", outro_info.duration, 0.22, 0.36)
+                if progress:
+                    progress(0.36)
+
+                total_frames = math.ceil(Fraction(str(audio_info.duration)) * target_fps)
+                middle_frames = total_frames - intro_frames - outro_frames
+                if middle_frames <= 0:
+                    raise RenderError("Audio is too short for selected intro/outro")
+                repeats, remainder = divmod(middle_frames, period_frames)
+                log(f"Loop period: {period_frames} frames; middle: {middle_frames} frames")
+                log(f"Loop copies: {repeats}; tail: {remainder} frames")
+
+                if repeats:
+                    log("Step 4: encoding one loop period")
+                    encode(loop, work / "period.mp4", loop_info.duration,
+                           0.36, 0.64, period_frames)
+                    parts.extend([("period.mp4", period_frames)] * repeats)
+                if remainder:
+                    log("Step 5: encoding partial loop tail")
+                    encode(loop, work / "tail.mp4", remainder / target_fps,
+                           0.64, 0.76, remainder)
+                    parts.append(("tail.mp4", remainder))
+                if outro_frames:
+                    parts.append(("outro.mp4", outro_frames))
+                if progress:
+                    progress(0.76)
+
+                listing = work / "concat.txt"
+                listing.write_text(
+                    "ffconcat version 1.0\n" + "".join(
+                        f"file '{name}'\nduration {frames / target_fps:.9f}\n"
+                        for name, frames in parts
+                    ),
+                    encoding="utf-8",
+                )
+                log("Step 6: copying video and muxing audio")
+                cmd = [
+                    ffmpeg, "-n", "-nostdin", "-hide_banner", "-f", "concat", "-i", str(listing),
+                    "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
+                    "-t", f"{audio_info.duration:.6f}", "-c:v", "copy",
+                    *audio_codec_args, "-movflags", "+faststart",
+                    "-progress", "pipe:1", "-nostats", str(partial_output),
+                ]
+                final_frames = self._run(cmd, audio_info.duration, log, stage(0.76, FINALIZING_PROGRESS))
+                if final_frames != total_frames:
+                    raise RenderError(
+                        f"Final video has {final_frames} frames; expected {total_frames}"
+                    )
+                if self._cancelled:
+                    raise RenderCancelled("Render cancelled")
             output = _publish_output(partial_output, audio, output_dir)
         except BaseException:
             partial_output.unlink(missing_ok=True)
@@ -266,7 +292,7 @@ class RenderJob:
         duration: float,
         log: LogFn,
         progress: ProgressFn | None,
-    ) -> None:
+    ) -> int:
         log("")
         log("Running:")
         log(_quote_cmd(cmd))
@@ -285,15 +311,22 @@ class RenderJob:
             process = self._process
 
         assert process.stdout is not None
+        frame_count = 0
         try:
             for line in process.stdout:
                 line = line.rstrip()
+                if line.startswith("frame="):
+                    try:
+                        frame_count = int(line.split("=", 1)[1])
+                    except ValueError:
+                        pass
                 if _handle_progress_line(line, duration, progress):
                     continue
                 if line:
                     log(line)
             code = process.wait()
         finally:
+            process.stdout.close()
             with self._lock:
                 self._process = None
 
@@ -301,6 +334,7 @@ class RenderJob:
             raise RenderCancelled("Render cancelled")
         if code != 0:
             raise RenderError(f"ffmpeg failed with exit code {code}")
+        return frame_count
 
 
 def _output_folder(audio_path: str | Path, output_dir: str | Path | None) -> Path:
@@ -348,8 +382,33 @@ def render_video(
     output_dir: str | Path | None = None,
     log: LogFn = print,
     progress: ProgressFn | None = None,
+    audio_format: str = "aac",
 ) -> Path:
-    return RenderJob().render(audio_path, intro_path, loop_path, outro_path, output_dir, log, progress)
+    return RenderJob().render(
+        audio_path, intro_path, loop_path, outro_path, output_dir, log, progress, audio_format
+    )
+
+
+def _audio_output_args(info: StreamInfo, audio_format: str) -> tuple[list[str], str]:
+    if audio_format not in {"aac", "alac"}:
+        raise RenderError(f"Unsupported audio output format: {audio_format}")
+
+    codec = (info.audio_codec or "").lower()
+    rate = info.audio_sample_rate
+    source = f"{codec.upper() or 'unknown codec'} {rate or 'unknown'} Hz"
+    if rate == 48000 and codec == audio_format:
+        return ["-c:a", "copy"], f"{source} copied unchanged"
+    if rate == 48000 and codec == "aac" and audio_format == "alac":
+        return ["-c:a", "copy"], f"{source} copied; no benefit from wrapping AAC in ALAC"
+
+    resampling = f"; resampled from {rate or 'unknown'} Hz" if rate != 48000 else ""
+    if audio_format == "alac":
+        return ["-c:a", "alac", "-ar", "48000"], (
+            f"{source} -> ALAC 48000 Hz, lossless, channels preserved{resampling}"
+        )
+    return ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"], (
+        f"{source} -> AAC 48000 Hz, 320k, stereo{resampling}"
+    )
 
 
 def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, Fraction]:
@@ -373,6 +432,19 @@ def _video_filter(width: int, height: int, frame_rate: str) -> str:
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
         f"fps={frame_rate},format=yuv420p,setsar=1"
     )
+
+
+def _video_encoder_args(frame_rate: Fraction, rate_control: list[str]) -> list[str]:
+    gop = max(1, round(GOP_SECONDS * frame_rate))
+    return [
+        "-c:v", "libx264", "-preset", VIDEO_PRESET,
+        "-profile:v", "high", "-pix_fmt", "yuv420p",
+        *rate_control,
+        "-x264-params",
+        f"bframes=3:b-pyramid=normal:open-gop=0:scenecut=0:"
+        f"keyint={gop}:min-keyint={gop}:repeat-headers=1",
+        "-video_track_timescale", str(frame_rate.numerator),
+    ]
 
 
 def _format_frame_rate(frame_rate: Fraction) -> str:

@@ -40,11 +40,25 @@ class VideoSiblingTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_window_title_contains_current_version(self) -> None:
-        self.assertEqual(APP_VERSION, "1.2.0")
-        self.assertEqual(APP_TITLE, "Podcast Renderer 1.2.0")
+        self.assertEqual(APP_VERSION, "1.3.0")
+        self.assertEqual(APP_TITLE, "Podcast Renderer 1.3.0")
 
 
 class WindowLifecycleTests(unittest.TestCase):
+    def test_render_worker_passes_selected_audio_format(self) -> None:
+        app = object.__new__(App)
+        app.current_job = Mock()
+        app.current_job.render.return_value = Path("output.mp4")
+        app.log_queue = queue.Queue()
+
+        App._render_worker(app, {
+            "AUDIO": "audio.wav", "INTRO": "", "LOOP": "loop.mp4",
+            "OUTRO": "", "OUTPUT": "output",
+        }, "alac")
+
+        self.assertEqual(app.current_job.render.call_args.kwargs["audio_format"], "alac")
+        self.assertEqual(app.log_queue.get_nowait(), ("done", "output.mp4"))
+
     def test_close_cancels_active_render_before_destroying_window(self) -> None:
         app = object.__new__(App)
         app.current_job = Mock()

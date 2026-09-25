@@ -113,9 +113,13 @@ The output is saved in the selected `OUTPUT` folder as:
 
 The output folder is filled from the audio file folder automatically, but you can change it in the `OUTPUT` field. If the output file exists, the app writes `_1`, `_2`, etc. It does not silently overwrite.
 
-The final file is MP4 with H.264 High Profile, `yuv420p`, source-derived resolution and constant frame rate, 2048k video bitrate (`maxrate` 2048k, `bufsize` 4096k, x264 `veryfast` preset), and `+faststart`.
+The final file is MP4 with H.264 High Profile, `yuv420p`, source-derived resolution and constant frame rate, x264 CRF 20 with an 8000k maximum rate and 64000k VBV buffer, and `+faststart`. CRF targets quality rather than a fixed file size; actual bitrate depends on the video. The cap is a safeguard, not a 2048k target. A single loop period is encoded with x264 `veryslow` and a closed GOP of about four seconds; its repetitions are copied without re-encoding. Intro, partial loop tail, and outro are encoded separately with the same settings.
 
-AAC input audio is copied into the MP4 without re-encoding. Other audio formats are encoded to AAC at 48 kHz, 320k, stereo; mono non-AAC input is converted to stereo.
+CRF 20 was checked against the previous 2048k ABR settings on a 1080p intro/loop/outro set and one 2488x1400 animation. PSNR against the normalized source improved on all four clips; the capped and uncapped CRF 20 runs produced the same PSNR to measurement precision. The animated loop became slightly larger, while the outro became smaller. This is not a guarantee for other content, especially grainy or photographic video. To repeat the comparison on your own clips, run `python scripts/measure_video_quality.py PATH_TO_VIDEO --crfs 20 --maxrate 8000k --bufsize 64000k` (use `python3` on macOS).
+
+`Audio output` defaults to AAC for broad playback compatibility. Non-AAC sources are encoded to AAC at 48 kHz, 320k, stereo; mono sources become stereo. Choose `ALAC (lossless)` to preserve a 48 kHz PCM master without lossy encoding. ALAC preserves the source channel count, and browser playback support is limited.
+
+Audio is copied only when its codec and sample rate match the selected output at 48 kHz. When ALAC is selected, an existing 48 kHz AAC track is also copied instead of being wrapped in a lossless codec. Other sources, including 44.1 kHz AAC, are encoded or resampled to 48 kHz. The render log reports the decision. Resampling a 44.1 kHz source changes its samples even when the output codec is ALAC.
 
 ## Build Standalone with PyInstaller
 
@@ -189,7 +193,7 @@ notarized.
 
 ## Automated Releases
 
-Pushing a version tag such as `v1.2.0` starts `.github/workflows/release.yml`.
+Pushing a version tag such as `v1.3.0` starts `.github/workflows/release.yml`.
 The tag must match `APP_VERSION` in `main.py`. GitHub Actions then:
 
 1. runs all unit tests on Windows, Apple Silicon macOS, and Intel macOS;
@@ -219,7 +223,7 @@ runtime files. Redistributable packages include `THIRD_PARTY_NOTICES.md`,
 - Media analysis and rendering can be cancelled from the GUI; the active ffprobe or FFmpeg process is terminated.
 - Closing the window cancels and waits for the active media process.
 - Each ffprobe analysis is limited to 15 seconds, so an unreadable source cannot leave the app waiting indefinitely.
-- FFmpeg renders to a hidden partial MP4. Failed or cancelled partial files are removed, and the final name is published only after success.
+- Short encoded video segments are made in a system temporary folder and removed after rendering or cancellation. FFmpeg muxes to a hidden partial MP4; failed or cancelled partial files are removed, and the final name is published only after success.
 - If rendering fails, the GUI log shows the command and FFmpeg output.
 
 ## Tests

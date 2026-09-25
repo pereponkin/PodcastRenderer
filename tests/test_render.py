@@ -9,12 +9,42 @@ from unittest.mock import patch
 
 import render
 from media_probe import StreamInfo
-from render import RenderCancelled, RenderError, RenderJob, _handle_progress_line, choose_video_target
+from render import (
+    RenderCancelled, RenderError, RenderJob, _audio_output_args,
+    _handle_progress_line, choose_video_target,
+)
 
 
 class RenderJobTests(unittest.TestCase):
+    def test_audio_output_policy_checks_codec_and_sample_rate(self) -> None:
+        aac_48 = StreamInfo(duration=1.0, audio_codec="aac", audio_sample_rate=48000)
+        aac_44 = StreamInfo(duration=1.0, audio_codec="aac", audio_sample_rate=44100)
+        alac_48 = StreamInfo(duration=1.0, audio_codec="alac", audio_sample_rate=48000)
+
+        self.assertEqual(_audio_output_args(aac_48, "aac")[0], ["-c:a", "copy"])
+        self.assertEqual(_audio_output_args(aac_48, "alac")[0], ["-c:a", "copy"])
+        self.assertEqual(_audio_output_args(alac_48, "alac")[0], ["-c:a", "copy"])
+        self.assertEqual(_audio_output_args(aac_44, "aac")[0],
+                         ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"])
+        self.assertEqual(_audio_output_args(aac_44, "alac")[0],
+                         ["-c:a", "alac", "-ar", "48000"])
+        self.assertIn("resampled", _audio_output_args(aac_44, "aac")[1])
+        with self.assertRaises(RenderError):
+            _audio_output_args(aac_48, "flac")
+
+    @staticmethod
+    def _complete_stage(cmd, _duration, _log, _progress) -> int:
+        if cmd[-1] == "-":
+            return 60
+        if cmd[-1].endswith(".partial.mp4"):
+            Path(cmd[-1]).write_bytes(b"complete mp4")
+            return 300
+        Path(cmd[-1]).write_bytes(b"period mp4")
+        return 60
+
     def test_success_publishes_output_only_after_partial_file_is_complete(self) -> None:
-        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac")
+        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac",
+                                audio_sample_rate=48000)
         video_info = StreamInfo(
             duration=2.0,
             has_video=True,
@@ -31,11 +61,12 @@ class RenderJobTests(unittest.TestCase):
             video.touch()
             job = RenderJob()
 
-            def complete_render(cmd, _duration, _log, _progress) -> None:
-                partial = Path(cmd[-1])
-                self.assertIn(".partial.", partial.name)
-                self.assertFalse((root / "episode_video.mp4").exists())
-                partial.write_bytes(b"complete mp4")
+            def complete_render(cmd, duration, log, progress) -> int:
+                if cmd[-1].endswith(".partial.mp4"):
+                    partial = Path(cmd[-1])
+                    self.assertIn(".partial.", partial.name)
+                    self.assertFalse((root / "episode_video.mp4").exists())
+                return self._complete_stage(cmd, duration, log, progress)
 
             with (
                 patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
@@ -50,7 +81,8 @@ class RenderJobTests(unittest.TestCase):
             self.assertEqual(list(root.glob("*.partial.*")), [])
 
     def test_failed_render_removes_partial_output(self) -> None:
-        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac")
+        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac",
+                                audio_sample_rate=48000)
         video_info = StreamInfo(
             duration=2.0,
             has_video=True,
@@ -67,9 +99,11 @@ class RenderJobTests(unittest.TestCase):
             video.touch()
             job = RenderJob()
 
-            def fail_render(cmd, _duration, _log, _progress) -> None:
-                Path(cmd[-1]).write_bytes(b"broken mp4")
-                raise RenderError("test failure")
+            def fail_render(cmd, duration, log, progress) -> int:
+                if cmd[-1].endswith(".partial.mp4"):
+                    Path(cmd[-1]).write_bytes(b"broken mp4")
+                    raise RenderError("test failure")
+                return self._complete_stage(cmd, duration, log, progress)
 
             with (
                 patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
@@ -84,7 +118,8 @@ class RenderJobTests(unittest.TestCase):
             self.assertEqual(list(root.glob("*.partial.*")), [])
 
     def test_existing_output_is_preserved_and_next_suffix_is_used(self) -> None:
-        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac")
+        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac",
+                                audio_sample_rate=48000)
         video_info = StreamInfo(
             duration=2.0,
             has_video=True,
@@ -103,8 +138,11 @@ class RenderJobTests(unittest.TestCase):
             existing.write_bytes(b"original mp4")
             job = RenderJob()
 
-            def complete_render(cmd, _duration, _log, _progress) -> None:
-                Path(cmd[-1]).write_bytes(b"new mp4")
+            def complete_render(cmd, duration, log, progress) -> int:
+                count = self._complete_stage(cmd, duration, log, progress)
+                if cmd[-1].endswith(".partial.mp4"):
+                    Path(cmd[-1]).write_bytes(b"new mp4")
+                return count
 
             with (
                 patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
@@ -119,7 +157,8 @@ class RenderJobTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"new mp4")
 
     def test_ffmpeg_does_not_read_stdin_or_overwrite_output(self) -> None:
-        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac")
+        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac",
+                                audio_sample_rate=48000)
         video_info = StreamInfo(
             duration=2.0,
             has_video=True,
@@ -136,9 +175,9 @@ class RenderJobTests(unittest.TestCase):
             video.touch()
             commands: list[list[str]] = []
 
-            def complete_render(cmd, _duration, _log, _progress) -> None:
+            def complete_render(cmd, duration, log, progress) -> int:
                 commands.append(cmd)
-                Path(cmd[-1]).write_bytes(b"complete mp4")
+                return self._complete_stage(cmd, duration, log, progress)
 
             job = RenderJob()
             with (
@@ -149,12 +188,21 @@ class RenderJobTests(unittest.TestCase):
             ):
                 job.render(audio, None, video, None, root, log=lambda _line: None)
 
-        self.assertIn("-nostdin", commands[0])
-        self.assertIn("-n", commands[0])
-        self.assertNotIn("-y", commands[0])
+        for command in commands:
+            self.assertIn("-nostdin", command)
+            self.assertIn("-n", command)
+            self.assertNotIn("-y", command)
+        for command in commands[1:-1]:
+            self.assertEqual(command[command.index("-crf") + 1], "20")
+            self.assertEqual(command[command.index("-maxrate") + 1], "8000k")
+            self.assertEqual(command[command.index("-bufsize") + 1], "64000k")
+            self.assertNotIn("-b:v", command)
+        self.assertIn("copy", commands[-1])
+        self.assertNotIn("libx264", commands[-1])
 
     def test_ffmpeg_receives_exact_fractional_frame_rate(self) -> None:
-        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac")
+        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="aac",
+                                audio_sample_rate=48000)
         video_info = StreamInfo(
             duration=2.0,
             has_video=True,
@@ -171,9 +219,9 @@ class RenderJobTests(unittest.TestCase):
             video.touch()
             commands: list[list[str]] = []
 
-            def complete_render(cmd, _duration, _log, _progress) -> None:
+            def complete_render(cmd, duration, log, progress) -> int:
                 commands.append(cmd)
-                Path(cmd[-1]).write_bytes(b"complete mp4")
+                return self._complete_stage(cmd, duration, log, progress)
 
             job = RenderJob()
             with (
@@ -184,10 +232,50 @@ class RenderJobTests(unittest.TestCase):
             ):
                 job.render(audio, None, video, None, root, log=lambda _line: None)
 
-        command = commands[0]
+        command = commands[1]
         self.assertEqual(command[command.index("-r") + 1], "30000/1001")
-        filter_complex = command[command.index("-filter_complex") + 1]
-        self.assertIn("fps=30000/1001", filter_complex)
+        video_filter = command[command.index("-vf") + 1]
+        self.assertIn("fps=30000/1001", video_filter)
+
+    def test_short_audio_encodes_only_partial_loop(self) -> None:
+        audio_info = StreamInfo(duration=1.0, has_audio=True, audio_codec="aac",
+                                audio_sample_rate=48000)
+        video_info = StreamInfo(
+            duration=2.0, has_video=True, width=1920, height=1080,
+            frame_rate=Fraction(30, 1),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            audio = root / "audio.m4a"
+            loop = root / "loop.mp4"
+            audio.touch()
+            loop.touch()
+            commands: list[list[str]] = []
+
+            def complete_render(cmd, _duration, _log, _progress) -> int:
+                commands.append(cmd)
+                if cmd[-1] == "-":
+                    return 60
+                if cmd[-1].endswith("tail.mp4"):
+                    Path(cmd[-1]).write_bytes(b"tail")
+                    return 30
+                Path(cmd[-1]).write_bytes(b"final")
+                return 30
+
+            job = RenderJob()
+            with (
+                patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
+                patch("render.probe_audio", return_value=audio_info),
+                patch("render.probe_video", return_value=video_info),
+                patch.object(job, "_run", side_effect=complete_render),
+            ):
+                job.render(audio, None, loop, None, root, log=lambda _line: None)
+
+        self.assertEqual(len(commands), 3)
+        self.assertIn("-frames:v", commands[1])
+        self.assertEqual(commands[1][commands[1].index("-frames:v") + 1], "30")
+        self.assertIn("-c:v", commands[-1])
+        self.assertEqual(commands[-1][commands[-1].index("-c:v") + 1], "copy")
 
     def test_ffmpeg_process_is_hidden_on_windows(self) -> None:
         class CompletedProcess:
