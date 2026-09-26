@@ -153,6 +153,10 @@ jobs:
         shell: bash
         run: bash build_mac.sh
 
+      - name: Launch packaged app
+        shell: bash
+        run: python3 -c 'import subprocess; subprocess.run(["dist/PodcastRenderer.app/Contents/MacOS/PodcastRenderer", "--smoke-test"], check=True, timeout=30)'
+
       - name: Upload macOS packages
         uses: actions/upload-artifact@v7
         with:

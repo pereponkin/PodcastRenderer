@@ -384,4 +384,17 @@ def _match_case(value: str, sample: str) -> str:
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    app = App()
+    if sys.argv[1:] == ["--smoke-test"]:
+        visible = []
+
+        def finish_smoke_test() -> None:
+            visible.append(app.winfo_viewable())
+            app.destroy()
+
+        app.after(500, finish_smoke_test)
+        app.mainloop()
+        if visible != [1]:
+            raise SystemExit("Main window did not become visible")
+    else:
+        app.mainloop()
