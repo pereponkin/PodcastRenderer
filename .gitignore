@@ -15,3 +15,5 @@ vendor/macos/ffprobe
 
 .DS_Store
 Thumbs.db
+
+brag-output/
