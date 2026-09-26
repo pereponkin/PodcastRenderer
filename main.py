@@ -14,7 +14,7 @@ from render import FINALIZING_PROGRESS, MUX_START_PROGRESS, RenderCancelled, Ren
 
 
 APP_NAME = "Podcast Renderer"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
 
 

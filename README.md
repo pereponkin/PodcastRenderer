@@ -195,7 +195,7 @@ notarized.
 
 ## Automated Releases
 
-Pushing a version tag such as `v1.4.0` starts `.github/workflows/release.yml`.
+Pushing a version tag such as `v1.5.0` starts `.github/workflows/release.yml`.
 The tag must match `APP_VERSION` in `main.py`. GitHub Actions then:
 
 1. runs all unit tests on Windows, Apple Silicon macOS, and Intel macOS;
