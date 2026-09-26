@@ -129,6 +129,7 @@ class RenderJob:
         elif sys.platform == "darwin" and platform.machine() == "x86_64":
             fast_encoder = "aac_at"
         if fast_encoder and audio_codec_args[1] == "aac":
+            fast_name = "Windows AAC" if fast_encoder == "aac_mf" else "AudioToolbox AAC"
             fast_args, fast_decision = _audio_output_args(audio_info, fast_encoder)
             if fast_args[1] == fast_encoder:
                 check_cmd = [
@@ -139,12 +140,12 @@ class RenderJob:
                 try:
                     check = self._run_probe(check_cmd)
                 except subprocess.TimeoutExpired:
-                    log(f"{fast_encoder} check timed out; using native AAC")
+                    log(f"{fast_name} check timed out; using native AAC")
                 else:
                     if check.returncode == 0:
                         audio_codec_args, audio_decision = fast_args, fast_decision
                     else:
-                        log(f"{fast_encoder} unavailable; using native AAC: "
+                        log(f"{fast_name} encoder unavailable; using native AAC: "
                             + (check.stderr.strip() or f"exit code {check.returncode}"))
 
         partial_output = _partial_output_path(audio, output_dir)

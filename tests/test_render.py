@@ -87,6 +87,7 @@ class RenderJobTests(unittest.TestCase):
 
                 job = RenderJob()
                 updates: list[float] = []
+                logs: list[str] = []
                 with (
                     patch("render.sys.platform", system),
                     patch("render.platform.machine", return_value=machine),
@@ -98,12 +99,15 @@ class RenderJobTests(unittest.TestCase):
                     patch.object(job, "_run", side_effect=complete),
                 ):
                     job.render(audio, None, loop, None, root,
-                               log=lambda _line: None, progress=updates.append)
+                               log=logs.append, progress=updates.append)
 
                 final_cmd = commands[-1]
                 self.assertEqual(final_cmd[final_cmd.index("-c:a") + 1], expected_codec)
                 self.assertEqual(probe_check.call_count,
                                  int(system == "win32" or machine == "x86_64"))
+                if check_code and machine != "arm64":
+                    label = "Windows AAC" if system == "win32" else "AudioToolbox AAC"
+                    self.assertTrue(any(f"{label} encoder unavailable" in line for line in logs))
                 self.assertEqual(updates[-2:], [render.FINALIZING_PROGRESS, 1.0])
 
     @staticmethod
