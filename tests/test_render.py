@@ -34,6 +34,62 @@ class RenderJobTests(unittest.TestCase):
         self.assertNotIn("-ar", _audio_output_args(pcm_44)[0])
         self.assertNotIn("-ac", _audio_output_args(mp3_44)[0])
 
+        stereo_mp3 = StreamInfo(duration=1.0, audio_codec="mp3", audio_sample_rate=48000,
+                                audio_channels=2, audio_bitrate=134858)
+        mono_mp3 = StreamInfo(duration=1.0, audio_codec="mp3", audio_sample_rate=44100,
+                              audio_channels=1, audio_bitrate=64000)
+        rich_audio = StreamInfo(duration=1.0, audio_codec="ac3", audio_sample_rate=48000,
+                                audio_channels=2, audio_bitrate=448000)
+        self.assertEqual(_audio_output_args(stereo_mp3, media_foundation=True)[0],
+                         ["-c:a", "aac_mf", "-b:a", "256k", "-ar", "48000"])
+        self.assertEqual(_audio_output_args(mono_mp3, media_foundation=True)[0],
+                         ["-c:a", "aac_mf", "-b:a", "128k", "-ar", "48000"])
+        self.assertEqual(_audio_output_args(rich_audio, media_foundation=True)[0],
+                         ["-c:a", "aac", "-q:a", "10", "-ar", "48000"])
+        self.assertEqual(_audio_output_args(mp3_44, media_foundation=True)[0],
+                         ["-c:a", "aac", "-q:a", "10", "-ar", "48000"])
+        self.assertEqual(_audio_output_args(aac_48, media_foundation=True)[0],
+                         ["-c:a", "copy"])
+
+    def test_windows_aac_check_selects_fast_encoder_or_falls_back(self) -> None:
+        audio_info = StreamInfo(duration=10.0, has_audio=True, audio_codec="mp3",
+                                audio_sample_rate=48000, audio_channels=2,
+                                audio_bitrate=134858)
+        video_info = StreamInfo(duration=2.0, has_video=True, width=64, height=64,
+                                frame_rate=Fraction(30, 1))
+
+        for check_code, expected_codec in ((0, "aac_mf"), (1, "aac")):
+            with self.subTest(check_code=check_code), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                audio, loop = root / "audio.mp3", root / "loop.mp4"
+                audio.touch()
+                loop.touch()
+                commands: list[list[str]] = []
+
+                def complete(cmd, duration, log, progress) -> int:
+                    commands.append(cmd)
+                    if cmd[-1].endswith(".partial.mp4") and progress:
+                        progress(render.FINALIZING_PROGRESS)
+                    return self._complete_stage(cmd, duration, log, progress)
+
+                job = RenderJob()
+                updates: list[float] = []
+                with (
+                    patch("render.sys.platform", "win32"),
+                    patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
+                    patch("render.probe_audio", return_value=audio_info),
+                    patch("render.probe_video", return_value=video_info),
+                    patch.object(job, "_run_probe", return_value=subprocess.CompletedProcess(
+                        [], check_code, "", "encoder unavailable")),
+                    patch.object(job, "_run", side_effect=complete),
+                ):
+                    job.render(audio, None, loop, None, root,
+                               log=lambda _line: None, progress=updates.append)
+
+                final_cmd = commands[-1]
+                self.assertEqual(final_cmd[final_cmd.index("-c:a") + 1], expected_codec)
+                self.assertEqual(updates[-2:], [render.FINALIZING_PROGRESS, 1.0])
+
     @staticmethod
     def _complete_stage(cmd, _duration, _log, _progress) -> int:
         if cmd[-1] == "-":

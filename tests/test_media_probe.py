@@ -17,7 +17,7 @@ class MediaProbeTests(unittest.TestCase):
             "streams": [
                 {"codec_type": "video", "duration": "20.0"},
                 {"codec_type": "audio", "duration": "10.0", "codec_name": "aac",
-                 "sample_rate": "44100"},
+                 "sample_rate": "44100", "channels": 2, "bit_rate": "192000"},
             ],
         }
         completed = subprocess.CompletedProcess([], 0, json.dumps(payload), "")
@@ -30,6 +30,8 @@ class MediaProbeTests(unittest.TestCase):
 
         self.assertEqual(info.duration, 10.0)
         self.assertEqual(info.audio_sample_rate, 44100)
+        self.assertEqual(info.audio_channels, 2)
+        self.assertEqual(info.audio_bitrate, 192000)
 
     def test_video_frame_rate_preserves_ffprobe_fraction(self) -> None:
         payload = {

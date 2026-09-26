@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from main import APP_TITLE, APP_VERSION, App, find_video_siblings
+from render import FINALIZING_PROGRESS, MUX_START_PROGRESS
 
 
 class VideoSiblingTests(unittest.TestCase):
@@ -126,23 +127,48 @@ class WindowLifecycleTests(unittest.TestCase):
 
         self.assertEqual(text, "00:10 elapsed / finalizing")
 
-    def test_eta_smooths_jump_and_counts_down_between_updates(self) -> None:
+    def test_eta_waits_for_mux_and_uses_its_observed_speed(self) -> None:
         app = object.__new__(App)
         app.render_started_at = 100.0
+        app.mux_started_at = None
         app.eta_deadline = None
         app.progress_value = 0.2
         with patch("main.time.monotonic", return_value=110.0):
             App._update_eta(app)
-        self.assertEqual(app.eta_deadline, 150.0)
+            self.assertEqual(App._progress_text(app, 0.2),
+                             "00:10 elapsed / --:-- remaining")
+        self.assertIsNone(app.eta_deadline)
 
-        app.progress_value = 0.25
+        app.progress_value = MUX_START_PROGRESS
         with patch("main.time.monotonic", return_value=120.0):
             App._update_eta(app)
-            self.assertEqual(App._progress_text(app, 0.25),
-                             "00:20 elapsed / 00:36 remaining")
-        with patch("main.time.monotonic", return_value=125.0):
-            self.assertEqual(App._progress_text(app, 0.25),
-                             "00:25 elapsed / 00:31 remaining")
+        self.assertEqual(app.mux_started_at, 120.0)
+
+        app.progress_value = MUX_START_PROGRESS + 0.25 * (FINALIZING_PROGRESS - MUX_START_PROGRESS)
+        with patch("main.time.monotonic", return_value=130.0):
+            App._update_eta(app)
+            self.assertEqual(App._progress_text(app, app.progress_value),
+                             "00:30 elapsed / 00:30 remaining")
+        with patch("main.time.monotonic", return_value=135.0):
+            self.assertEqual(App._progress_text(app, app.progress_value),
+                             "00:35 elapsed / 00:25 remaining")
+
+    def test_preparation_bar_does_not_show_stage_weights_as_completion(self) -> None:
+        app = object.__new__(App)
+        app.progress_canvas = Mock()
+        app.progress_canvas.winfo_width.return_value = 100
+        app.progress_canvas.winfo_height.return_value = 26
+        app.render_started_at = 100.0
+        app.eta_deadline = None
+        app.progress_value = 0.7
+
+        with patch("main.time.monotonic", return_value=110.0):
+            App._draw_progress(app)
+
+        filled = [call.args for call in app.progress_canvas.create_rectangle.call_args_list
+                  if call.kwargs.get("fill") == "#4f8bd6"]
+        self.assertTrue(filled)
+        self.assertLessEqual(filled[0][2] - filled[0][0], 40)
 
     def test_cancel_failure_is_reported_and_window_remains_open(self) -> None:
         app = object.__new__(App)

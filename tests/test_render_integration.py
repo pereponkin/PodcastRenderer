@@ -1,6 +1,7 @@
 import json
 import math
 import subprocess
+import sys
 import tempfile
 import unittest
 from fractions import Fraction
@@ -188,7 +189,40 @@ class RenderIntegrationTests(unittest.TestCase):
                 [self.ffprobe, "-v", "error", "-show_streams", "-of", "json", str(output)],
                 capture_output=True, text=True, encoding="utf-8", check=True,
             ).stdout)["streams"]
-            self.assertEqual(next(s["channels"] for s in streams if s["codec_type"] == "audio"), 1)
+            audio_stream = next(s for s in streams if s["codec_type"] == "audio")
+            self.assertEqual(audio_stream["channels"], 1)
+            self.assertEqual(audio_stream["profile"], "LC")
+
+    def test_stereo_mp3_with_repeated_loop_produces_faststart_aac(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:
+            folder = Path(temporary)
+            video = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+            audio = folder / "stereo #1.mp3"
+            self.run_media("-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                           "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
+                           "-ac", "2", audio)
+            logs: list[str] = []
+
+            output = RenderJob().render(audio, None, video, None, folder, log=logs.append)
+
+            info = probe_audio(output, self.ffprobe)
+            self.assertEqual(info.audio_codec, "aac")
+            self.assertEqual(info.audio_sample_rate, 48000)
+            self.assertEqual(info.audio_channels, 2)
+            stream_data = json.loads(subprocess.run(
+                [self.ffprobe, "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=profile", "-of", "json", str(output)],
+                capture_output=True, text=True, encoding="utf-8", check=True,
+            ).stdout)["streams"]
+            self.assertEqual(stream_data[0]["profile"], "LC")
+            self.assertLess(abs(probe_video(output, "OUTPUT", self.ffprobe).duration
+                                - info.duration), 0.05)
+            data = output.read_bytes()
+            self.assertLess(data.index(b"moov"), data.index(b"mdat"))
+            if sys.platform == "win32":
+                self.assertTrue(any("Windows Media Foundation" in line for line in logs))
+            else:
+                self.assertTrue(any("VBR q=10" in line for line in logs))
 
 
 if __name__ == "__main__":

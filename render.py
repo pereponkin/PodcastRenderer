@@ -30,6 +30,7 @@ VIDEO_PRESET = "veryslow"
 GOP_SECONDS = 4
 CANCEL_KILL_TIMEOUT = 5.0
 FINALIZING_PROGRESS = 0.999
+MUX_START_PROGRESS = 0.76
 LOSSLESS_AUDIO_CODECS = {
     "alac", "als", "ape", "flac", "mlp", "shorten", "tak", "truehd",
     "tta", "wavpack", "wmalossless",
@@ -114,13 +115,31 @@ class RenderJob:
         video_infos = [info for info in (intro_info, loop_info, outro_info) if info]
         target_width, target_height, target_fps = choose_video_target(video_infos)
         target_fps_text = _format_frame_rate(target_fps)
-        audio_codec_args, audio_decision = _audio_output_args(audio_info)
-
         intro_duration = intro_info.duration if intro_info else 0.0
         outro_duration = outro_info.duration if outro_info else 0.0
         middle_duration = audio_info.duration - intro_duration - outro_duration
         if middle_duration <= 0:
             raise RenderError("Audio is too short for selected intro/outro")
+
+        audio_codec_args, audio_decision = _audio_output_args(audio_info)
+        if sys.platform == "win32" and audio_codec_args[1] == "aac":
+            fast_args, fast_decision = _audio_output_args(audio_info, media_foundation=True)
+            if fast_args[1] == "aac_mf":
+                check_cmd = [
+                    ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-i", str(audio), "-map", "0:a:0", "-t", "0.25", "-vn",
+                    *fast_args, "-f", "null", "-",
+                ]
+                try:
+                    check = self._run_probe(check_cmd)
+                except subprocess.TimeoutExpired:
+                    log("Windows AAC check timed out; using native AAC")
+                else:
+                    if check.returncode == 0:
+                        audio_codec_args, audio_decision = fast_args, fast_decision
+                    else:
+                        log("Windows AAC encoder unavailable; using native AAC: "
+                            + (check.stderr.strip() or f"exit code {check.returncode}"))
 
         partial_output = _partial_output_path(audio, output_dir)
 
@@ -154,7 +173,8 @@ class RenderJob:
         ]
 
         def stage(start: float, end: float) -> ProgressFn | None:
-            return (lambda value: progress(start + (end - start) * value)) if progress else None
+            return (lambda value: progress(start + (end - start) *
+                                           min(value / FINALIZING_PROGRESS, 1.0))) if progress else None
 
         def encode(source: Path, destination: Path, duration: float,
                    start: float, end: float, frames: int | None = None) -> int:
@@ -214,12 +234,12 @@ class RenderJob:
                 if remainder:
                     log("Step 5: encoding partial loop tail")
                     encode(loop, work / "tail.mp4", remainder / target_fps,
-                           0.64, 0.76, remainder)
+                           0.64, MUX_START_PROGRESS, remainder)
                     parts.append(("tail.mp4", remainder))
                 if outro_frames:
                     parts.append(("outro.mp4", outro_frames))
                 if progress:
-                    progress(0.76)
+                    progress(MUX_START_PROGRESS)
 
                 listing = work / "concat.txt"
                 listing.write_text(
@@ -237,7 +257,10 @@ class RenderJob:
                     *audio_codec_args, "-movflags", "+faststart",
                     "-progress", "pipe:1", "-nostats", str(partial_output),
                 ]
-                final_frames = self._run(cmd, audio_info.duration, log, stage(0.76, FINALIZING_PROGRESS))
+                final_frames = self._run(
+                    cmd, audio_info.duration, log,
+                    stage(MUX_START_PROGRESS, FINALIZING_PROGRESS),
+                )
                 if final_frames != total_frames:
                     raise RenderError(
                         f"Final video has {final_frames} frames; expected {total_frames}"
@@ -391,7 +414,9 @@ def render_video(
     )
 
 
-def _audio_output_args(info: StreamInfo) -> tuple[list[str], str]:
+def _audio_output_args(
+    info: StreamInfo, media_foundation: bool = False,
+) -> tuple[list[str], str]:
     codec = (info.audio_codec or "").lower()
     rate = info.audio_sample_rate
     source = f"{codec.upper() or 'unknown codec'} {rate or 'unknown'} Hz"
@@ -402,6 +427,14 @@ def _audio_output_args(info: StreamInfo) -> tuple[list[str], str]:
     if codec in LOSSLESS_AUDIO_CODECS or codec.startswith("pcm_"):
         return ["-c:a", "alac"], (
             f"{source} -> ALAC, source sample rate and channels preserved"
+        )
+    if (media_foundation and info.audio_channels in (1, 2)
+            and info.audio_bitrate and info.audio_bitrate <= 384_000):
+        kbps = max(128 if info.audio_channels == 1 else 256,
+                   math.ceil(info.audio_bitrate / 64_000) * 64)
+        return ["-c:a", "aac_mf", "-b:a", f"{kbps}k", "-ar", "48000"], (
+            f"{source} -> AAC 48000 Hz, Windows Media Foundation {kbps}k, "
+            "channels preserved"
         )
     return ["-c:a", "aac", "-q:a", "10", "-ar", "48000"], (
         f"{source} -> AAC 48000 Hz, VBR q=10, channels preserved{resampling}"

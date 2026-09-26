@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from render import RenderCancelled, RenderJob
+from render import FINALIZING_PROGRESS, MUX_START_PROGRESS, RenderCancelled, RenderJob
 
 
 APP_NAME = "Podcast Renderer"
@@ -39,6 +39,7 @@ class App(TkinterDnD.Tk):
         self.render_started_at: float | None = None
         self.progress_value = 0.0
         self.eta_deadline: float | None = None
+        self.mux_started_at: float | None = None
         self._closing = False
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -167,6 +168,7 @@ class App(TkinterDnD.Tk):
         self.render_started_at = time.monotonic()
         self.progress_value = 0.0
         self.eta_deadline = None
+        self.mux_started_at = None
         self._draw_progress()
         self.current_job = RenderJob(
             cancel_error=lambda line: self.log_queue.put(("cancel_error", line))
@@ -258,13 +260,16 @@ class App(TkinterDnD.Tk):
 
     def _update_eta(self) -> None:
         value = self.progress_value
-        if self.render_started_at is None or not 0.1 <= value < 0.999:
+        if self.render_started_at is None or value < MUX_START_PROGRESS:
             return
         now = time.monotonic()
-        elapsed = now - self.render_started_at
-        if elapsed < 5:
+        if self.mux_started_at is None:
+            self.mux_started_at = now
+        fraction = (value - MUX_START_PROGRESS) / (FINALIZING_PROGRESS - MUX_START_PROGRESS)
+        elapsed = now - self.mux_started_at
+        if elapsed < 5 or not 0.02 <= fraction < 1.0:
             return
-        candidate = self.render_started_at + elapsed / value
+        candidate = self.mux_started_at + elapsed / fraction
         if self.eta_deadline is None:
             self.eta_deadline = candidate
         else:
@@ -291,6 +296,7 @@ class App(TkinterDnD.Tk):
             self.current_job = None
             self.render_started_at = None
             self.eta_deadline = None
+            self.mux_started_at = None
 
     def _draw_progress(self) -> None:
         canvas = self.progress_canvas
@@ -300,17 +306,26 @@ class App(TkinterDnD.Tk):
         width = max(canvas.winfo_width(), 1)
         height = max(canvas.winfo_height(), 1)
         value = max(0.0, min(self.progress_value, 1.0))
-        fill_width = int(width * value)
         canvas.create_rectangle(0, 0, width, height, fill="#f3f3f3", outline="")
-        if fill_width > 0:
-            canvas.create_rectangle(0, 0, fill_width, height, fill="#4f8bd6", outline="")
+        if self.render_started_at is not None and value < MUX_START_PROGRESS:
+            span = max(40, width // 5)
+            phase = ((time.monotonic() - self.render_started_at) % 1.5) / 1.5
+            offset = int((width + span) * phase) - span
+            left, right = max(0, offset), min(width, offset + span)
+            if right > left:
+                canvas.create_rectangle(left, 0, right, height, fill="#4f8bd6", outline="")
+        elif value >= MUX_START_PROGRESS:
+            fraction = min(1.0, (value - MUX_START_PROGRESS) / (1.0 - MUX_START_PROGRESS))
+            fill_width = int(width * fraction)
+            if fill_width > 0:
+                canvas.create_rectangle(0, 0, fill_width, height, fill="#4f8bd6", outline="")
         canvas.create_text(width // 2, height // 2, text=self._progress_text(value), fill="#111111")
 
     def _progress_text(self, value: float) -> str:
         if not self.render_started_at:
             return "00:00 elapsed / --:-- remaining"
         elapsed = max(0.0, time.monotonic() - self.render_started_at)
-        if 0.999 <= value < 1.0:
+        if FINALIZING_PROGRESS <= value < 1.0:
             return f"{_format_time(elapsed)} elapsed / finalizing"
         remaining = (max(0.0, self.eta_deadline - time.monotonic())
                      if self.eta_deadline is not None else None)

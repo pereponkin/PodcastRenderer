@@ -29,6 +29,8 @@ class StreamInfo:
     frame_rate: Fraction | None = None
     audio_codec: str | None = None
     audio_sample_rate: int | None = None
+    audio_channels: int | None = None
+    audio_bitrate: int | None = None
 
 
 def find_tool(name: str) -> str | None:
@@ -146,6 +148,8 @@ def _probe(
         frame_rate=frame_rate,
         audio_codec=audio_stream.get("codec_name") if audio_stream else None,
         audio_sample_rate=_to_int(audio_stream.get("sample_rate")) if audio_stream else None,
+        audio_channels=_to_int(audio_stream.get("channels")) if audio_stream else None,
+        audio_bitrate=_to_int(audio_stream.get("bit_rate")) if audio_stream else None,
     )
 
 

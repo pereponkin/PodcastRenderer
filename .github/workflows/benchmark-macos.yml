@@ -1,0 +1,45 @@
+name: macOS render benchmark
+
+on:
+  push:
+    branches: [codex/mac-aac-benchmark]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Download verified FFmpeg binaries
+        run: bash scripts/fetch_ffmpeg_macos.sh
+
+      - name: Build macOS app
+        run: bash build_mac.sh
+
+      - name: Benchmark bundled FFmpeg and renderer
+        run: ./.venv-build-$(uname -m)/bin/python -m scripts.benchmark_macos
+
+      - name: Save measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-${{ matrix.runner }}
+          path: benchmark-results/*.json
+          if-no-files-found: ignore
