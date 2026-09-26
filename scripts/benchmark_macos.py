@@ -85,15 +85,16 @@ def measure_render(ffmpeg: Path, ffprobe: Path, source: Path, loop: Path,
                    destination: Path, audio_args: list[str] | None = None) -> dict:
     destination.mkdir()
     start = time.perf_counter()
+    logs: list[str] = []
     with patch.object(render, "require_tools", return_value=(str(ffmpeg), str(ffprobe))):
         if audio_args is None:
-            output = render.RenderJob().render(source, None, loop, None, destination,
-                                               log=lambda line: None)
+            output = render.RenderJob().render(source, None, loop, None,
+                                               destination, log=logs.append)
         else:
             with patch.object(render, "_audio_output_args",
                               return_value=(audio_args, "benchmark encoder")):
                 output = render.RenderJob().render(source, None, loop, None,
-                                                   destination, log=lambda line: None)
+                                                   destination, log=logs.append)
     seconds = time.perf_counter() - start
     data = probe(ffprobe, output)
     check_audio(data)
@@ -102,7 +103,8 @@ def measure_render(ffmpeg: Path, ffprobe: Path, source: Path, loop: Path,
     assert abs(float(data["format"]["duration"]) - DURATION) < 0.1, data["format"]
     assert faststart(output), "MP4 moov box is not before mdat"
     return {"seconds": round(seconds, 2), "bytes": output.stat().st_size,
-            "video_frames": video.get("nb_frames"), "duration": data["format"]["duration"]}
+            "video_frames": video.get("nb_frames"), "duration": data["format"]["duration"],
+            "audio_decision": next(line for line in logs if line.startswith("Audio: "))}
 
 
 def main() -> None:
@@ -133,14 +135,21 @@ def main() -> None:
         result["native_audio"] = measure_audio(ffmpeg, ffprobe, audio,
                                                work / "native.m4a", native)
         result["native_render"] = measure_render(ffmpeg, ffprobe, audio, loop,
-                                                 work / "native")
+                                                 work / "native",
+                                                 native if platform.machine() == "x86_64" else None)
+        if platform.machine() == "arm64":
+            assert "VBR q=10" in result["native_render"]["audio_decision"]
         if has_aac_at:
-            candidate = ["-c:a", "aac_at", "-b:a", "320k", "-ar", "48000"]
+            candidate = ["-c:a", "aac_at", "-b:a", "256k", "-ar", "48000"]
             try:
                 result["aac_at_audio"] = measure_audio(ffmpeg, ffprobe, audio,
                                                        work / "aac_at.m4a", candidate)
                 result["aac_at_render"] = measure_render(ffmpeg, ffprobe, audio, loop,
-                                                         work / "aac_at", candidate)
+                                                         work / "aac_at",
+                                                         None if platform.machine() == "x86_64"
+                                                         else candidate)
+                if platform.machine() == "x86_64":
+                    assert "Apple AudioToolbox 256k" in result["aac_at_render"]["audio_decision"]
             except (RuntimeError, AssertionError, ValueError) as error:
                 result["aac_at_error"] = str(error)[-4000:]
 
@@ -158,6 +167,8 @@ def main() -> None:
                            f"full render: {result['aac_at_render']['seconds']} s.\n")
             else:
                 file.write(f"AudioToolbox AAC: {'unavailable' if not has_aac_at else 'failed'}\n")
+    if platform.machine() == "x86_64" and "aac_at_render" not in result:
+        raise RuntimeError("Intel macOS did not render with AudioToolbox AAC")
 
 
 if __name__ == "__main__":

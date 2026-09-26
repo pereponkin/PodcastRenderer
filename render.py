@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -122,9 +123,14 @@ class RenderJob:
             raise RenderError("Audio is too short for selected intro/outro")
 
         audio_codec_args, audio_decision = _audio_output_args(audio_info)
-        if sys.platform == "win32" and audio_codec_args[1] == "aac":
-            fast_args, fast_decision = _audio_output_args(audio_info, media_foundation=True)
-            if fast_args[1] == "aac_mf":
+        fast_encoder = None
+        if sys.platform == "win32":
+            fast_encoder = "aac_mf"
+        elif sys.platform == "darwin" and platform.machine() == "x86_64":
+            fast_encoder = "aac_at"
+        if fast_encoder and audio_codec_args[1] == "aac":
+            fast_args, fast_decision = _audio_output_args(audio_info, fast_encoder)
+            if fast_args[1] == fast_encoder:
                 check_cmd = [
                     ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
                     "-i", str(audio), "-map", "0:a:0", "-t", "0.25", "-vn",
@@ -133,12 +139,12 @@ class RenderJob:
                 try:
                     check = self._run_probe(check_cmd)
                 except subprocess.TimeoutExpired:
-                    log("Windows AAC check timed out; using native AAC")
+                    log(f"{fast_encoder} check timed out; using native AAC")
                 else:
                     if check.returncode == 0:
                         audio_codec_args, audio_decision = fast_args, fast_decision
                     else:
-                        log("Windows AAC encoder unavailable; using native AAC: "
+                        log(f"{fast_encoder} unavailable; using native AAC: "
                             + (check.stderr.strip() or f"exit code {check.returncode}"))
 
         partial_output = _partial_output_path(audio, output_dir)
@@ -415,7 +421,7 @@ def render_video(
 
 
 def _audio_output_args(
-    info: StreamInfo, media_foundation: bool = False,
+    info: StreamInfo, fast_encoder: str | None = None,
 ) -> tuple[list[str], str]:
     codec = (info.audio_codec or "").lower()
     rate = info.audio_sample_rate
@@ -428,12 +434,13 @@ def _audio_output_args(
         return ["-c:a", "alac"], (
             f"{source} -> ALAC, source sample rate and channels preserved"
         )
-    if (media_foundation and info.audio_channels in (1, 2)
+    if (fast_encoder and info.audio_channels in (1, 2)
             and info.audio_bitrate and info.audio_bitrate <= 384_000):
         kbps = max(128 if info.audio_channels == 1 else 256,
                    math.ceil(info.audio_bitrate / 64_000) * 64)
-        return ["-c:a", "aac_mf", "-b:a", f"{kbps}k", "-ar", "48000"], (
-            f"{source} -> AAC 48000 Hz, Windows Media Foundation {kbps}k, "
+        encoder_name = "Windows Media Foundation" if fast_encoder == "aac_mf" else "Apple AudioToolbox"
+        return ["-c:a", fast_encoder, "-b:a", f"{kbps}k", "-ar", "48000"], (
+            f"{source} -> AAC 48000 Hz, {encoder_name} {kbps}k, "
             "channels preserved"
         )
     return ["-c:a", "aac", "-q:a", "10", "-ar", "48000"], (
