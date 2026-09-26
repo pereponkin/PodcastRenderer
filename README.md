@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/pereponkin/PodcastRenderer/actions/workflows/tests.yml/badge.svg)](https://github.com/pereponkin/PodcastRenderer/actions/workflows/tests.yml)
 
-Small Python GUI app that renders a YouTube-compatible MP4 from one audio file and up to three silent video files: intro, loop, outro. Video inputs can be MP4, MOV, or M4V as long as FFmpeg can read them.
+Small Python GUI app that renders an MP4 video master for platform delivery from one audio file and up to three silent video files: intro, loop, outro. Video inputs can be MP4, MOV, or M4V as long as FFmpeg can read them.
 
 Choose source files or drop one file onto its Audio, Intro, Loop, or Outro path field. Dropping a named video can still fill its matching sibling fields automatically.
 
@@ -121,7 +121,9 @@ The final file is MP4 with H.264 High Profile, `yuv420p`, source-derived resolut
 
 CRF 20 was checked against the previous 2048k ABR settings on a 1080p intro/loop/outro set and one 2488x1400 animation. PSNR against the normalized source improved on all four clips; the capped and uncapped CRF 20 runs produced the same PSNR to measurement precision. The animated loop became slightly larger, while the outro became smaller. This is not a guarantee for other content, especially grainy or photographic video. To repeat the comparison on your own clips, run `python scripts/measure_video_quality.py PATH_TO_VIDEO --crfs 20 --maxrate 8000k --bufsize 64000k` (use `python3` on macOS).
 
-Audio output is automatic. AAC is copied without re-encoding, including 44.1 kHz AAC. Common lossless codecs (PCM, FLAC, ALAC, and others) are delivered as ALAC at the source sample rate; an existing ALAC stream is copied. Other lossy audio is encoded to AAC at 48 kHz. On Windows, Media Foundation (`aac_mf`) is preferred; on Intel macOS, AudioToolbox (`aac_at`) is preferred. Both are used for mono/stereo sources with a known bitrate up to 384 kbit/s if a short check on the source succeeds; the selected bitrate is never below the source bitrate. On Apple Silicon, or when the faster encoder does not qualify or fails its check, the native AAC encoder uses VBR quality `q=10` with no fixed bitrate ceiling. Channel count is preserved, including mono. ALAC playback in browsers is limited; AAC remains the most compatible format for direct web playback. The render log reports the decision.
+Audio output is automatic. AAC is copied without re-encoding, including 44.1 kHz AAC. Common lossless codecs (PCM, FLAC, ALAC, and others) are delivered as ALAC at the source sample rate; an existing ALAC stream is copied. Other lossy audio is encoded to AAC at 48 kHz. On Windows, Media Foundation (`aac_mf`) is preferred; on Intel macOS, AudioToolbox (`aac_at`) is preferred. Both are used for mono/stereo sources with a known bitrate up to 384 kbit/s if a short check on the source succeeds; the selected bitrate is never below the source bitrate. On Apple Silicon, or when the faster encoder does not qualify or fails its check, the native AAC encoder uses VBR quality `q=10` with no fixed bitrate ceiling. Channel count is preserved, including mono. The render log reports the decision.
+
+ALAC keeps lossless source audio lossless in the MP4 delivery master, avoiding an extra lossy encode before a platform processes the upload. Limited direct browser playback of ALAC is a separate concern from platform ingestion. Acceptance of ALAC-in-MP4 depends on the destination: [YouTube's recommended MP4 upload settings](https://support.google.com/youtube/answer/1722171?hl=en) list AAC-LC, Opus, or Eclipsa Audio, not ALAC. Check the target platform's requirements or upload a short test before relying on ALAC delivery. AAC-LC remains the more widely documented option for direct web playback and YouTube uploads.
 
 ## Build Standalone with PyInstaller
 
