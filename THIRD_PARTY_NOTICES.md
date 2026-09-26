@@ -1,8 +1,8 @@
 # Third-Party Notices
 
-This project uses only the Python standard library at runtime, plus external
-FFmpeg tools. Standalone builds may also contain the PyInstaller bootloader,
-the Python runtime, and Tcl/Tk runtime files.
+This project uses TkinterDnD2 and the Python standard library at runtime,
+plus external FFmpeg tools. Standalone builds may also contain the TkDND
+extension, PyInstaller bootloader, Python runtime, and Tcl/Tk runtime files.
 
 This file is a practical attribution and redistribution checklist, not legal
 advice.
@@ -94,6 +94,16 @@ under the Python Software Foundation License and related historical licenses.
 
 The GUI uses Python `tkinter`, which depends on Tcl/Tk. Standalone GUI builds
 may contain Tcl/Tk runtime files.
+
+## TkinterDnD2 and TkDND
+
+- TkinterDnD2: https://github.com/Eliav2/tkinterdnd2
+- TkDND: https://github.com/petasis/tkdnd
+
+TkinterDnD2 provides the Python drag-and-drop wrapper under the MIT license.
+TkDND provides the bundled native Tcl/Tk drag-and-drop extension under its
+own license terms. Their notices are included in
+`licenses/TkinterDnD2-MIT.txt` and `licenses/TkDND-license.terms`.
 
 ## Inno Setup
 

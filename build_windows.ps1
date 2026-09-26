@@ -15,6 +15,7 @@ $notices = Join-Path $PSScriptRoot "THIRD_PARTY_NOTICES.md"
 $sourceOffer = Join-Path $PSScriptRoot "FFMPEG_SOURCE_OFFER.md"
 $licenses = Join-Path $PSScriptRoot "licenses"
 $buildRequirements = Join-Path $PSScriptRoot "requirements-build.txt"
+$runtimeRequirements = Join-Path $PSScriptRoot "requirements.txt"
 
 function Assert-FileHash {
     param(
@@ -56,13 +57,16 @@ if (-not (Test-Path -LiteralPath $licenses -PathType Container)) {
 if (-not (Test-Path -LiteralPath $buildRequirements)) {
     throw "Missing $buildRequirements"
 }
+if (-not (Test-Path -LiteralPath $runtimeRequirements)) {
+    throw "Missing $runtimeRequirements"
+}
 
 Assert-FileHash -Path $ffmpeg -HashFile $ffmpegHash
 Assert-FileHash -Path $ffprobe -HashFile $ffprobeHash
 
 $nativeErrors = $PSNativeCommandUseErrorActionPreference
 $PSNativeCommandUseErrorActionPreference = $false
-python -m pip install --disable-pip-version-check --requirement $buildRequirements
+python -m pip install --disable-pip-version-check --requirement $buildRequirements --requirement $runtimeRequirements
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install pinned build requirements"
 }
@@ -117,6 +121,7 @@ python -m PyInstaller `
     --name $appName `
     --icon "$icon" `
     --version-file "$versionFile" `
+    --collect-all tkinterdnd2 `
     --add-binary "$ffmpeg;bin" `
     --add-binary "$ffprobe;bin" `
     --add-data "$icon;assets" `

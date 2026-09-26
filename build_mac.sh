@@ -11,6 +11,7 @@ SOURCE_OFFER="FFMPEG_SOURCE_OFFER.md"
 LICENSES="licenses"
 INSTALL_GUIDE="installer/MACOS_INSTALL.txt"
 BUILD_REQUIREMENTS="requirements-build.txt"
+RUNTIME_REQUIREMENTS="requirements.txt"
 ICON="assets/Podcast Renderer.ico"
 
 need() {
@@ -41,7 +42,7 @@ need codesign
 need hdiutil
 need ditto
 
-for required in "$NOTICES" "$SOURCE_OFFER" "$INSTALL_GUIDE" "$BUILD_REQUIREMENTS" "$ICON"; do
+for required in "$NOTICES" "$SOURCE_OFFER" "$INSTALL_GUIDE" "$BUILD_REQUIREMENTS" "$RUNTIME_REQUIREMENTS" "$ICON"; do
   if [[ ! -f "$required" ]]; then
     echo "Missing $required" >&2
     exit 1
@@ -93,7 +94,7 @@ fi
 
 VENV=".venv-build-$(uname -m)"
 python3 -m venv "$VENV"
-"$VENV/bin/python" -m pip install --disable-pip-version-check --requirement "$BUILD_REQUIREMENTS"
+"$VENV/bin/python" -m pip install --disable-pip-version-check --requirement "$BUILD_REQUIREMENTS" --requirement "$RUNTIME_REQUIREMENTS"
 
 rm -rf build dist "${APP_NAME}.spec"
 
@@ -102,6 +103,7 @@ rm -rf build dist "${APP_NAME}.spec"
   --windowed \
   --name "$APP_NAME" \
   --icon "$ICON" \
+  --collect-all tkinterdnd2 \
   --osx-bundle-identifier "io.github.pereponkin.podcastrenderer" \
   --add-binary "$VENDOR_DIR/ffmpeg:bin" \
   --add-binary "$VENDOR_DIR/ffprobe:bin" \

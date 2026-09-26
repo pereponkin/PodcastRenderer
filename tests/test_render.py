@@ -16,21 +16,23 @@ from render import (
 
 
 class RenderJobTests(unittest.TestCase):
-    def test_audio_output_policy_checks_codec_and_sample_rate(self) -> None:
+    def test_audio_output_policy_follows_source_codec(self) -> None:
         aac_48 = StreamInfo(duration=1.0, audio_codec="aac", audio_sample_rate=48000)
         aac_44 = StreamInfo(duration=1.0, audio_codec="aac", audio_sample_rate=44100)
         alac_48 = StreamInfo(duration=1.0, audio_codec="alac", audio_sample_rate=48000)
+        alac_44 = StreamInfo(duration=1.0, audio_codec="alac", audio_sample_rate=44100)
+        pcm_44 = StreamInfo(duration=1.0, audio_codec="pcm_s16le", audio_sample_rate=44100)
+        flac_48 = StreamInfo(duration=1.0, audio_codec="flac", audio_sample_rate=48000)
+        mp3_44 = StreamInfo(duration=1.0, audio_codec="mp3", audio_sample_rate=44100)
 
-        self.assertEqual(_audio_output_args(aac_48, "aac")[0], ["-c:a", "copy"])
-        self.assertEqual(_audio_output_args(aac_48, "alac")[0], ["-c:a", "copy"])
-        self.assertEqual(_audio_output_args(alac_48, "alac")[0], ["-c:a", "copy"])
-        self.assertEqual(_audio_output_args(aac_44, "aac")[0],
-                         ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"])
-        self.assertEqual(_audio_output_args(aac_44, "alac")[0],
-                         ["-c:a", "alac", "-ar", "48000"])
-        self.assertIn("resampled", _audio_output_args(aac_44, "aac")[1])
-        with self.assertRaises(RenderError):
-            _audio_output_args(aac_48, "flac")
+        for info in (aac_48, aac_44, alac_48, alac_44):
+            self.assertEqual(_audio_output_args(info)[0], ["-c:a", "copy"])
+        for info in (pcm_44, flac_48):
+            self.assertEqual(_audio_output_args(info)[0], ["-c:a", "alac"])
+        self.assertEqual(_audio_output_args(mp3_44)[0],
+                         ["-c:a", "aac", "-q:a", "10", "-ar", "48000"])
+        self.assertNotIn("-ar", _audio_output_args(pcm_44)[0])
+        self.assertNotIn("-ac", _audio_output_args(mp3_44)[0])
 
     @staticmethod
     def _complete_stage(cmd, _duration, _log, _progress) -> int:

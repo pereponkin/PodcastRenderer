@@ -30,6 +30,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
@@ -51,7 +54,8 @@ jobs:
       - name: Verify tag version
         shell: pwsh
         run: |
-          $appVersion = python -c "from main import APP_VERSION; print(APP_VERSION)"
+          $versionLine = Select-String -LiteralPath "main.py" -Pattern '^APP_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$'
+          $appVersion = $versionLine.Matches[0].Groups[1].Value
           $tagVersion = $env:GITHUB_REF_NAME.TrimStart("v")
           if ($appVersion -ne $tagVersion) {
             throw "Tag $env:GITHUB_REF_NAME does not match APP_VERSION $appVersion"
@@ -134,7 +138,7 @@ jobs:
       - name: Verify tag version
         shell: bash
         run: |
-          app_version="$(python -c 'from main import APP_VERSION; print(APP_VERSION)')"
+          app_version="$(sed -nE 's/^APP_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' main.py)"
           tag_version="${GITHUB_REF_NAME#v}"
           if [[ "$app_version" != "$tag_version" ]]; then
             echo "Tag $GITHUB_REF_NAME does not match APP_VERSION $app_version" >&2

@@ -4,6 +4,8 @@
 
 Small Python GUI app that renders a YouTube-compatible MP4 from one audio file and up to three silent video files: intro, loop, outro. Video inputs can be MP4, MOV, or M4V as long as FFmpeg can read them.
 
+Choose source files or drop one file onto its Audio, Intro, Loop, or Outro path field. Dropping a named video can still fill its matching sibling fields automatically.
+
 The `Audio` source may also be a common video container such as MP4, MOV, MKV, AVI, WebM, MPEG, TS, or WMV. Only its first audio stream is used.
 
 ## Install Without Python
@@ -67,9 +69,10 @@ not upload it.
    - or download a build from <https://www.gyan.dev/ffmpeg/builds/> and add its `bin` folder to `PATH`
    - alternatively put `ffmpeg.exe` and `ffprobe.exe` next to `main.py`
 3. Open PowerShell in this folder.
-4. Run:
+4. Install the GUI dependency and run:
 
 ```powershell
+python -m pip install -r requirements.txt
 python main.py
 ```
 
@@ -90,6 +93,7 @@ brew install ffmpeg
 3. Open Terminal in this folder and run:
 
 ```bash
+python3 -m pip install -r requirements.txt
 python3 main.py
 ```
 
@@ -117,22 +121,20 @@ The final file is MP4 with H.264 High Profile, `yuv420p`, source-derived resolut
 
 CRF 20 was checked against the previous 2048k ABR settings on a 1080p intro/loop/outro set and one 2488x1400 animation. PSNR against the normalized source improved on all four clips; the capped and uncapped CRF 20 runs produced the same PSNR to measurement precision. The animated loop became slightly larger, while the outro became smaller. This is not a guarantee for other content, especially grainy or photographic video. To repeat the comparison on your own clips, run `python scripts/measure_video_quality.py PATH_TO_VIDEO --crfs 20 --maxrate 8000k --bufsize 64000k` (use `python3` on macOS).
 
-`Audio output` defaults to AAC for broad playback compatibility. Non-AAC sources are encoded to AAC at 48 kHz, 320k, stereo; mono sources become stereo. Choose `ALAC (lossless)` to preserve a 48 kHz PCM master without lossy encoding. ALAC preserves the source channel count, and browser playback support is limited.
-
-Audio is copied only when its codec and sample rate match the selected output at 48 kHz. When ALAC is selected, an existing 48 kHz AAC track is also copied instead of being wrapped in a lossless codec. Other sources, including 44.1 kHz AAC, are encoded or resampled to 48 kHz. The render log reports the decision. Resampling a 44.1 kHz source changes its samples even when the output codec is ALAC.
+Audio output is automatic. AAC is copied without re-encoding, including 44.1 kHz AAC. Common lossless codecs (PCM, FLAC, ALAC, and others) are delivered as ALAC at the source sample rate; an existing ALAC stream is copied. Other lossy audio is encoded to AAC at 48 kHz using VBR quality `q=10`, with no fixed bitrate ceiling. Channel count is preserved, including mono. ALAC playback in browsers is limited; AAC remains the most compatible format for direct web playback. The render log reports the decision.
 
 ## Build Standalone with PyInstaller
 
-Install the pinned build dependency:
+Install the pinned runtime and build dependencies:
 
 ```bash
-python -m pip install -r requirements-build.txt
+python -m pip install -r requirements.txt -r requirements-build.txt
 ```
 
 Windows:
 
 ```powershell
-python -m PyInstaller --onefile --windowed --name PodcastRenderer main.py
+python -m PyInstaller --onefile --windowed --collect-all tkinterdnd2 --name PodcastRenderer main.py
 ```
 
 The executable will be in `dist\PodcastRenderer.exe`. FFmpeg still needs to be installed on `PATH`, or you can place `ffmpeg.exe` and `ffprobe.exe` next to the executable.
@@ -162,8 +164,8 @@ dist\PodcastRenderer-Setup.exe
 macOS:
 
 ```bash
-python3 -m pip install -r requirements-build.txt
-python3 -m PyInstaller --windowed --name PodcastRenderer main.py
+python3 -m pip install -r requirements.txt -r requirements-build.txt
+python3 -m PyInstaller --windowed --collect-all tkinterdnd2 --name PodcastRenderer main.py
 ```
 
 The app bundle will be in `dist/PodcastRenderer.app`. FFmpeg still needs to be installed on `PATH`, or placed inside/next to the app and resolved by your launch setup.
@@ -193,7 +195,7 @@ notarized.
 
 ## Automated Releases
 
-Pushing a version tag such as `v1.3.0` starts `.github/workflows/release.yml`.
+Pushing a version tag such as `v1.4.0` starts `.github/workflows/release.yml`.
 The tag must match `APP_VERSION` in `main.py`. GitHub Actions then:
 
 1. runs all unit tests on Windows, Apple Silicon macOS, and Intel macOS;

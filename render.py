@@ -30,6 +30,10 @@ VIDEO_PRESET = "veryslow"
 GOP_SECONDS = 4
 CANCEL_KILL_TIMEOUT = 5.0
 FINALIZING_PROGRESS = 0.999
+LOSSLESS_AUDIO_CODECS = {
+    "alac", "als", "ape", "flac", "mlp", "shorten", "tak", "truehd",
+    "tta", "wavpack", "wmalossless",
+}
 
 
 class RenderError(RuntimeError):
@@ -76,7 +80,6 @@ class RenderJob:
         output_dir: str | Path | None = None,
         log: LogFn = print,
         progress: ProgressFn | None = None,
-        audio_format: str = "aac",
     ) -> Path:
         audio = Path(audio_path).expanduser().resolve()
         intro = Path(intro_path).expanduser().resolve() if intro_path else None
@@ -111,7 +114,7 @@ class RenderJob:
         video_infos = [info for info in (intro_info, loop_info, outro_info) if info]
         target_width, target_height, target_fps = choose_video_target(video_infos)
         target_fps_text = _format_frame_rate(target_fps)
-        audio_codec_args, audio_decision = _audio_output_args(audio_info, audio_format)
+        audio_codec_args, audio_decision = _audio_output_args(audio_info)
 
         intro_duration = intro_info.duration if intro_info else 0.0
         outro_duration = outro_info.duration if outro_info else 0.0
@@ -382,32 +385,26 @@ def render_video(
     output_dir: str | Path | None = None,
     log: LogFn = print,
     progress: ProgressFn | None = None,
-    audio_format: str = "aac",
 ) -> Path:
     return RenderJob().render(
-        audio_path, intro_path, loop_path, outro_path, output_dir, log, progress, audio_format
+        audio_path, intro_path, loop_path, outro_path, output_dir, log, progress
     )
 
 
-def _audio_output_args(info: StreamInfo, audio_format: str) -> tuple[list[str], str]:
-    if audio_format not in {"aac", "alac"}:
-        raise RenderError(f"Unsupported audio output format: {audio_format}")
-
+def _audio_output_args(info: StreamInfo) -> tuple[list[str], str]:
     codec = (info.audio_codec or "").lower()
     rate = info.audio_sample_rate
     source = f"{codec.upper() or 'unknown codec'} {rate or 'unknown'} Hz"
-    if rate == 48000 and codec == audio_format:
+    if codec in {"aac", "alac"}:
         return ["-c:a", "copy"], f"{source} copied unchanged"
-    if rate == 48000 and codec == "aac" and audio_format == "alac":
-        return ["-c:a", "copy"], f"{source} copied; no benefit from wrapping AAC in ALAC"
 
     resampling = f"; resampled from {rate or 'unknown'} Hz" if rate != 48000 else ""
-    if audio_format == "alac":
-        return ["-c:a", "alac", "-ar", "48000"], (
-            f"{source} -> ALAC 48000 Hz, lossless, channels preserved{resampling}"
+    if codec in LOSSLESS_AUDIO_CODECS or codec.startswith("pcm_"):
+        return ["-c:a", "alac"], (
+            f"{source} -> ALAC, source sample rate and channels preserved"
         )
-    return ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"], (
-        f"{source} -> AAC 48000 Hz, 320k, stereo{resampling}"
+    return ["-c:a", "aac", "-q:a", "10", "-ar", "48000"], (
+        f"{source} -> AAC 48000 Hz, VBR q=10, channels preserved{resampling}"
     )
 
 

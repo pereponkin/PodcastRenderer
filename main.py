@@ -8,16 +8,17 @@ import tkinter as tk
 import time
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from render import RenderCancelled, RenderJob
 
 
 APP_NAME = "Podcast Renderer"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
 
 
-class App(tk.Tk):
+class App(TkinterDnD.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
@@ -31,13 +32,13 @@ class App(tk.Tk):
         self.minsize(720, 440)
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.entries: dict[str, tk.StringVar] = {}
-        self.audio_format = tk.StringVar(value="aac")
         self.render_button: ttk.Button | None = None
         self.progress_canvas: tk.Canvas | None = None
         self.cancel_button: ttk.Button | None = None
         self.current_job: RenderJob | None = None
         self.render_started_at: float | None = None
         self.progress_value = 0.0
+        self.eta_deadline: float | None = None
         self._closing = False
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -45,7 +46,7 @@ class App(tk.Tk):
 
     def _build(self) -> None:
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(7, weight=1)
+        self.rowconfigure(6, weight=1)
 
         filetypes = {
             "AUDIO": [
@@ -71,7 +72,10 @@ class App(tk.Tk):
             ttk.Label(self, text=f"{display_labels[label]}:").grid(row=row, column=0, padx=10, pady=6, sticky="w")
             value = tk.StringVar()
             self.entries[label] = value
-            ttk.Entry(self, textvariable=value).grid(row=row, column=1, padx=6, pady=6, sticky="ew")
+            entry = ttk.Entry(self, textvariable=value)
+            entry.grid(row=row, column=1, padx=6, pady=6, sticky="ew")
+            entry.drop_target_register(DND_FILES)
+            entry.dnd_bind("<<Drop>>", lambda event, key=label: self._drop_file(event, key))
             ttk.Button(
                 self,
                 text="Choose",
@@ -84,39 +88,42 @@ class App(tk.Tk):
         ttk.Entry(self, textvariable=output).grid(row=4, column=1, padx=6, pady=6, sticky="ew")
         ttk.Button(self, text="Choose", command=self._choose_output).grid(row=4, column=2, padx=10, pady=6)
 
-        ttk.Label(self, text="Audio output:").grid(row=5, column=0, padx=10, pady=6, sticky="w")
-        audio_modes = ttk.Frame(self)
-        audio_modes.grid(row=5, column=1, padx=6, pady=6, sticky="w")
-        ttk.Radiobutton(audio_modes, text="AAC", variable=self.audio_format, value="aac").pack(side="left")
-        ttk.Radiobutton(audio_modes, text="ALAC (lossless)", variable=self.audio_format,
-                        value="alac").pack(side="left", padx=(18, 0))
-
         self.render_button = ttk.Button(self, text="Render", command=self._render)
-        self.render_button.grid(row=6, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.render_button.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
         self.progress_canvas = tk.Canvas(self, height=26, highlightthickness=1, highlightbackground="#9a9a9a")
         self.progress_canvas.bind("<Configure>", lambda _event: self._draw_progress())
         self.cancel_button = ttk.Button(self, text="Cancel", command=self._cancel, state="disabled")
-        self.cancel_button.grid(row=6, column=2, padx=10, pady=10, sticky="ew")
+        self.cancel_button.grid(row=5, column=2, padx=10, pady=10, sticky="ew")
 
         self.log = tk.Text(self, wrap="word", height=14)
-        self.log.grid(row=7, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="nsew")
+        self.log.grid(row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="nsew")
         scroll = ttk.Scrollbar(self, orient="vertical", command=self.log.yview)
-        scroll.grid(row=7, column=3, pady=(0, 10), sticky="ns")
+        scroll.grid(row=6, column=3, pady=(0, 10), sticky="ns")
         self.log.configure(yscrollcommand=scroll.set)
 
     def _choose(self, key: str, filetypes: list[tuple[str, str]]) -> None:
         selected = filedialog.askopenfilename(title=f"Choose {key}", filetypes=filetypes)
         if selected:
-            self.entries[key].set(selected)
-            if key == "AUDIO" and not self.entries["OUTPUT"].get().strip():
-                self.entries["OUTPUT"].set(str(Path(selected).parent))
-            if key in {"INTRO", "LOOP", "OUTRO"}:
-                self._autofill_video_siblings(Path(selected), key)
+            self._set_source(key, Path(selected))
+
+    def _drop_file(self, event: tk.Event, key: str) -> None:
+        paths = self.tk.splitlist(event.data)
+        if len(paths) != 1 or not Path(paths[0]).is_file():
+            messagebox.showerror("Invalid drop", "Drop one file onto its source field.")
+            return
+        self._set_source(key, Path(paths[0]))
+
+    def _set_source(self, key: str, selected: Path) -> None:
+        self.entries[key].set(str(selected))
+        if key == "AUDIO" and not self.entries["OUTPUT"].get().strip():
+            self.entries["OUTPUT"].set(str(selected.parent))
+        if key in {"INTRO", "LOOP", "OUTRO"}:
+            self._autofill_video_siblings(selected, key)
 
     def _autofill_video_siblings(self, selected: Path, selected_slot: str) -> None:
         for key, path in find_video_siblings(selected, selected_slot).items():
-            if not self.entries[key].get().strip():
+            if key != selected_slot and not self.entries[key].get().strip():
                 self.entries[key].set(str(path))
 
     def _choose_output(self) -> None:
@@ -159,13 +166,14 @@ class App(tk.Tk):
         self._set_busy(True)
         self.render_started_at = time.monotonic()
         self.progress_value = 0.0
+        self.eta_deadline = None
         self._draw_progress()
         self.current_job = RenderJob(
             cancel_error=lambda line: self.log_queue.put(("cancel_error", line))
         )
-        threading.Thread(target=self._render_worker, args=(paths, self.audio_format.get()), daemon=True).start()
+        threading.Thread(target=self._render_worker, args=(paths,), daemon=True).start()
 
-    def _render_worker(self, paths: dict[str, str], audio_format: str) -> None:
+    def _render_worker(self, paths: dict[str, str]) -> None:
         try:
             assert self.current_job is not None
             output = self.current_job.render(
@@ -176,7 +184,6 @@ class App(tk.Tk):
                 paths["OUTPUT"],
                 log=lambda line: self.log_queue.put(("log", line)),
                 progress=lambda value: self.log_queue.put(("progress", str(value))),
-                audio_format=audio_format,
             )
         except RenderCancelled as exc:
             self.log_queue.put(("cancelled", str(exc)))
@@ -210,6 +217,7 @@ class App(tk.Tk):
                     self._append(text)
                 elif kind == "progress":
                     self.progress_value = float(text)
+                    self._update_eta()
                     self._draw_progress()
                 elif kind == "cancelled":
                     self._append("")
@@ -244,7 +252,23 @@ class App(tk.Tk):
                     messagebox.showinfo("Render complete", f"Saved:\n{text}")
         except queue.Empty:
             pass
+        if self.render_started_at is not None:
+            self._draw_progress()
         self.after(100, self._drain_log)
+
+    def _update_eta(self) -> None:
+        value = self.progress_value
+        if self.render_started_at is None or not 0.1 <= value < 0.999:
+            return
+        now = time.monotonic()
+        elapsed = now - self.render_started_at
+        if elapsed < 5:
+            return
+        candidate = self.render_started_at + elapsed / value
+        if self.eta_deadline is None:
+            self.eta_deadline = candidate
+        else:
+            self.eta_deadline += 0.2 * (candidate - self.eta_deadline)
 
     def _append(self, line: str) -> None:
         self.log.insert("end", line + "\n")
@@ -258,7 +282,7 @@ class App(tk.Tk):
                 self.render_button.grid()
         if self.progress_canvas:
             if busy:
-                self.progress_canvas.grid(row=6, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+                self.progress_canvas.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
             else:
                 self.progress_canvas.grid_remove()
         if self.cancel_button:
@@ -266,6 +290,7 @@ class App(tk.Tk):
         if not busy:
             self.current_job = None
             self.render_started_at = None
+            self.eta_deadline = None
 
     def _draw_progress(self) -> None:
         canvas = self.progress_canvas
@@ -287,10 +312,8 @@ class App(tk.Tk):
         elapsed = max(0.0, time.monotonic() - self.render_started_at)
         if 0.999 <= value < 1.0:
             return f"{_format_time(elapsed)} elapsed / finalizing"
-        if value <= 0:
-            remaining = None
-        else:
-            remaining = max(0.0, elapsed * (1.0 - value) / value)
+        remaining = (max(0.0, self.eta_deadline - time.monotonic())
+                     if self.eta_deadline is not None else None)
         return f"{_format_time(elapsed)} elapsed / {_format_time(remaining)} remaining"
 
 

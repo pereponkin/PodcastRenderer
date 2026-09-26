@@ -1,7 +1,9 @@
 import queue
 import tempfile
+import tkinter as tk
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from main import APP_TITLE, APP_VERSION, App, find_video_siblings
@@ -40,12 +42,12 @@ class VideoSiblingTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_window_title_contains_current_version(self) -> None:
-        self.assertEqual(APP_VERSION, "1.3.0")
-        self.assertEqual(APP_TITLE, "Podcast Renderer 1.3.0")
+        self.assertEqual(APP_VERSION, "1.4.0")
+        self.assertEqual(APP_TITLE, "Podcast Renderer 1.4.0")
 
 
 class WindowLifecycleTests(unittest.TestCase):
-    def test_render_worker_passes_selected_audio_format(self) -> None:
+    def test_render_worker_uses_automatic_audio_output(self) -> None:
         app = object.__new__(App)
         app.current_job = Mock()
         app.current_job.render.return_value = Path("output.mp4")
@@ -54,10 +56,52 @@ class WindowLifecycleTests(unittest.TestCase):
         App._render_worker(app, {
             "AUDIO": "audio.wav", "INTRO": "", "LOOP": "loop.mp4",
             "OUTRO": "", "OUTPUT": "output",
-        }, "alac")
+        })
 
-        self.assertEqual(app.current_job.render.call_args.kwargs["audio_format"], "alac")
+        self.assertNotIn("audio_format", app.current_job.render.call_args.kwargs)
         self.assertEqual(app.log_queue.get_nowait(), ("done", "output.mp4"))
+
+    def test_drop_uses_tcl_file_list_and_fills_audio_output_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            audio = Path(folder) / "запись #1 с пробелами.wav"
+            audio.touch()
+            app = object.__new__(App)
+            app.tk = tk.Tcl()
+            app.entries = {"AUDIO": Mock(), "OUTPUT": Mock()}
+            app.entries["OUTPUT"].get.return_value = ""
+
+            App._drop_file(app, SimpleNamespace(data="{" + str(audio) + "}"), "AUDIO")
+
+            app.entries["AUDIO"].set.assert_called_once_with(str(audio))
+            app.entries["OUTPUT"].set.assert_called_once_with(str(audio.parent))
+
+    def test_drop_rejects_multiple_files(self) -> None:
+        app = object.__new__(App)
+        app.tk = tk.Tcl()
+        app.entries = {"LOOP": Mock()}
+        with patch("main.messagebox.showerror") as showerror:
+            App._drop_file(app, SimpleNamespace(data="{one.mp4} {two.mp4}"), "LOOP")
+        showerror.assert_called_once()
+        app.entries["LOOP"].set.assert_not_called()
+
+    def test_dropped_loop_autofills_matching_video_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            intro, loop, outro = (root / f"эпизод_{part}.mp4"
+                                  for part in ("Intro", "Loop", "Outro"))
+            for path in (intro, loop, outro):
+                path.touch()
+            app = object.__new__(App)
+            app.tk = tk.Tcl()
+            app.entries = {key: Mock() for key in ("INTRO", "LOOP", "OUTRO")}
+            for entry in app.entries.values():
+                entry.get.return_value = ""
+
+            App._drop_file(app, SimpleNamespace(data="{" + str(loop) + "}"), "LOOP")
+
+            app.entries["INTRO"].set.assert_called_once_with(str(intro))
+            app.entries["LOOP"].set.assert_called_once_with(str(loop))
+            app.entries["OUTRO"].set.assert_called_once_with(str(outro))
 
     def test_close_cancels_active_render_before_destroying_window(self) -> None:
         app = object.__new__(App)
@@ -82,12 +126,31 @@ class WindowLifecycleTests(unittest.TestCase):
 
         self.assertEqual(text, "00:10 elapsed / finalizing")
 
+    def test_eta_smooths_jump_and_counts_down_between_updates(self) -> None:
+        app = object.__new__(App)
+        app.render_started_at = 100.0
+        app.eta_deadline = None
+        app.progress_value = 0.2
+        with patch("main.time.monotonic", return_value=110.0):
+            App._update_eta(app)
+        self.assertEqual(app.eta_deadline, 150.0)
+
+        app.progress_value = 0.25
+        with patch("main.time.monotonic", return_value=120.0):
+            App._update_eta(app)
+            self.assertEqual(App._progress_text(app, 0.25),
+                             "00:20 elapsed / 00:36 remaining")
+        with patch("main.time.monotonic", return_value=125.0):
+            self.assertEqual(App._progress_text(app, 0.25),
+                             "00:25 elapsed / 00:31 remaining")
+
     def test_cancel_failure_is_reported_and_window_remains_open(self) -> None:
         app = object.__new__(App)
         app.log_queue = queue.Queue()
         app.log_queue.put(("cancel_error", "Could not stop media process: denied"))
         app._append = Mock()
         app._closing = True
+        app.render_started_at = None
         app.cancel_button = Mock()
         app.after = Mock()
 

@@ -78,19 +78,7 @@ class RenderIntegrationTests(unittest.TestCase):
 
             self.assertEqual(audio_hash(audio), audio_hash(output))
 
-            alac_requested_logs: list[str] = []
-            alac_requested = RenderJob().render(
-                audio, intro, loop, outro, folder, log=alac_requested_logs.append,
-                audio_format="alac",
-            )
-            copied_info = probe_audio(alac_requested, self.ffprobe)
-            self.assertEqual(copied_info.audio_codec, "aac")
-            self.assertEqual(copied_info.audio_sample_rate, 48000)
-            self.assertEqual(audio_hash(audio), audio_hash(alac_requested))
-            self.assertTrue(any("no benefit from wrapping AAC in ALAC" in line
-                                for line in alac_requested_logs))
-
-    def test_single_video_and_mono_wav_produce_stereo_aac(self) -> None:
+    def test_single_video_and_mono_wav_produce_mono_alac(self) -> None:
         with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:
             folder = Path(temporary)
             video = self.make_video(folder, "один loop #1.mp4",
@@ -111,11 +99,11 @@ class RenderIntegrationTests(unittest.TestCase):
                                         * Fraction(30_000, 1_001))
             self.assertEqual(int(video_stream["nb_frames"]), expected_frames)
             self.assertEqual(video_stream["avg_frame_rate"], "30000/1001")
-            self.assertEqual(audio_stream["codec_name"], "aac")
-            self.assertEqual(audio_stream["sample_rate"], "48000")
-            self.assertEqual(audio_stream["channels"], 2)
+            self.assertEqual(audio_stream["codec_name"], "alac")
+            self.assertEqual(audio_stream["sample_rate"], "44100")
+            self.assertEqual(audio_stream["channels"], 1)
 
-    def test_aac_44100_is_resampled_in_default_mode(self) -> None:
+    def test_aac_44100_is_copied_unchanged(self) -> None:
         with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:
             folder = Path(temporary)
             video = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
@@ -129,14 +117,12 @@ class RenderIntegrationTests(unittest.TestCase):
             self.assertEqual(probe_audio(audio, self.ffprobe).audio_sample_rate, 44100)
             output_info = probe_audio(output, self.ffprobe)
             self.assertEqual(output_info.audio_codec, "aac")
-            self.assertEqual(output_info.audio_sample_rate, 48000)
-            self.assertTrue(any("resampled from 44100 Hz" in line for line in logs))
-
-            alac_output = RenderJob().render(audio, None, video, None, folder,
-                                             log=lambda _line: None, audio_format="alac")
-            alac_info = probe_audio(alac_output, self.ffprobe)
-            self.assertEqual(alac_info.audio_codec, "alac")
-            self.assertEqual(alac_info.audio_sample_rate, 48000)
+            self.assertEqual(output_info.audio_sample_rate, 44100)
+            self.assertTrue(any("copied unchanged" in line for line in logs))
+            self.assertEqual(
+                self.run_media("-i", audio, "-map", "0:a:0", "-c:a", "copy", "-f", "streamhash", "-"),
+                self.run_media("-i", output, "-map", "0:a:0", "-c:a", "copy", "-f", "streamhash", "-"),
+            )
 
     def test_alac_preserves_stereo_pcm_samples(self) -> None:
         with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:
@@ -148,7 +134,7 @@ class RenderIntegrationTests(unittest.TestCase):
             logs: list[str] = []
 
             output = RenderJob().render(audio, None, video, None, folder,
-                                        log=logs.append, audio_format="alac")
+                                        log=logs.append)
             output_info = probe_audio(output, self.ffprobe)
             self.assertEqual(output_info.audio_codec, "alac")
             self.assertEqual(output_info.audio_sample_rate, 48000)
@@ -158,16 +144,51 @@ class RenderIntegrationTests(unittest.TestCase):
                                       "-ar", "48000", "-ac", "2", "-f", "md5", "-")
 
             self.assertEqual(pcm_md5(audio), pcm_md5(output))
-            self.assertTrue(any("lossless, channels preserved" in line for line in logs))
+            self.assertTrue(any("source sample rate and channels preserved" in line
+                                for line in logs))
 
-            aac_output = RenderJob().render(audio, None, video, None, folder,
-                                            log=lambda _line: None)
             alac_delta = abs(probe_video(output, "OUTPUT", self.ffprobe).duration
                              - output_info.duration)
-            aac_delta = abs(probe_video(aac_output, "OUTPUT", self.ffprobe).duration
-                            - probe_audio(aac_output, self.ffprobe).duration)
-            self.assertLessEqual(alac_delta, aac_delta + 0.001,
-                                 f"ALAC A/V delta {alac_delta:.6f}s; AAC {aac_delta:.6f}s")
+            self.assertLess(alac_delta, 0.04)
+
+    def test_flac_44100_keeps_lossless_audio_and_sample_rate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:
+            folder = Path(temporary)
+            video = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+            audio = folder / "мастер.flac"
+            self.run_media("-f", "lavfi", "-i", "sine=frequency=440:duration=0.55",
+                           "-c:a", "flac", "-ar", "44100", "-ac", "1", audio)
+
+            output = RenderJob().render(audio, None, video, None, folder,
+                                        log=lambda _line: None)
+            info = probe_audio(output, self.ffprobe)
+            self.assertEqual(info.audio_codec, "alac")
+            self.assertEqual(info.audio_sample_rate, 44100)
+
+            def pcm_md5(path: Path) -> str:
+                return self.run_media("-i", path, "-map", "0:a:0", "-c:a", "pcm_s16le",
+                                      "-f", "md5", "-")
+
+            self.assertEqual(pcm_md5(audio), pcm_md5(output))
+
+    def test_mono_mp3_is_encoded_as_mono_aac(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:
+            folder = Path(temporary)
+            video = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+            audio = folder / "mono.mp3"
+            self.run_media("-f", "lavfi", "-i", "sine=frequency=440:duration=0.55",
+                           "-c:a", "libmp3lame", "-ar", "44100", "-ac", "1", audio)
+
+            output = RenderJob().render(audio, None, video, None, folder,
+                                        log=lambda _line: None)
+            info = probe_audio(output, self.ffprobe)
+            self.assertEqual(info.audio_codec, "aac")
+            self.assertEqual(info.audio_sample_rate, 48000)
+            streams = json.loads(subprocess.run(
+                [self.ffprobe, "-v", "error", "-show_streams", "-of", "json", str(output)],
+                capture_output=True, text=True, encoding="utf-8", check=True,
+            ).stdout)["streams"]
+            self.assertEqual(next(s["channels"] for s in streams if s["codec_type"] == "audio"), 1)
 
 
 if __name__ == "__main__":
