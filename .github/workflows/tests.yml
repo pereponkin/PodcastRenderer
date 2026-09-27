@@ -30,8 +30,43 @@ jobs:
       - name: Install runtime dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Download verified Windows FFmpeg binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/fetch_ffmpeg_windows.ps1
+
+      - name: Download verified macOS FFmpeg binaries
+        if: runner.os == 'macOS'
+        run: bash scripts/fetch_ffmpeg_macos.sh
+
       - name: Run tests
         run: python -m unittest discover -s tests -v
+
+  smoke-windows:
+    name: Launch Windows portable package
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Download verified FFmpeg binaries
+        shell: pwsh
+        run: ./scripts/fetch_ffmpeg_windows.ps1
+
+      - name: Build portable archive
+        shell: pwsh
+        run: ./build_windows.ps1
+
+      - name: Check and launch portable package
+        run: python scripts/check_windows_portable.py dist/PodcastRenderer-Windows-Portable.zip
 
   smoke-macos:
     name: Launch macOS app on ${{ matrix.runner }}

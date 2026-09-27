@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -31,6 +32,9 @@ class StreamInfo:
     audio_sample_rate: int | None = None
     audio_channels: int | None = None
     audio_bitrate: int | None = None
+    audio_start_offset: float = 0.0
+    audio_sample_format: str | None = None
+    audio_bits_per_sample: int | None = None
 
 
 def find_tool(name: str) -> str | None:
@@ -137,6 +141,8 @@ def _probe(
     duration = _duration(data, streams, preferred_stream_type)
     video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
     audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+    format_start = _to_float(data.get("format", {}).get("start_time")) or 0.0
+    audio_start = _to_float(audio_stream.get("start_time")) if audio_stream else None
     width, height = _display_dimensions(video_stream)
     frame_rate = _frame_rate(video_stream)
     return StreamInfo(
@@ -150,6 +156,13 @@ def _probe(
         audio_sample_rate=_to_int(audio_stream.get("sample_rate")) if audio_stream else None,
         audio_channels=_to_int(audio_stream.get("channels")) if audio_stream else None,
         audio_bitrate=_to_int(audio_stream.get("bit_rate")) if audio_stream else None,
+        # FFmpeg normally subtracts the container start time from input timestamps.
+        audio_start_offset=(audio_start - format_start) if audio_start is not None else 0.0,
+        audio_sample_format=audio_stream.get("sample_fmt") if audio_stream else None,
+        audio_bits_per_sample=(
+            _to_int(audio_stream.get("bits_per_raw_sample"))
+            or _to_int(audio_stream.get("bits_per_sample"))
+        ) if audio_stream else None,
     )
 
 
@@ -194,16 +207,37 @@ def _duration(data: dict, streams: list[dict], preferred_stream_type: str | None
             None,
         )
     candidates = [preferred.get("duration") if preferred else None]
+    if preferred:
+        try:
+            candidates.append(float(Fraction(str(preferred["duration_ts"]))
+                                    * Fraction(str(preferred["time_base"]))))
+        except (KeyError, ValueError, ZeroDivisionError, OverflowError):
+            pass
+        tag = next((value for key, value in preferred.get("tags", {}).items()
+                    if key.upper() == "DURATION"), None)
+        if isinstance(tag, str):
+            try:
+                hours, minutes, seconds = tag.split(":")
+                # Matroska's DURATION tag includes the stream's starting offset.
+                candidates.append(int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+                                  - (_to_float(preferred.get("start_time")) or 0.0))
+            except ValueError:
+                pass
     candidates += [data.get("format", {}).get("duration")]
     candidates += [stream.get("duration") for stream in streams]
     for value in candidates:
-        try:
-            duration = float(value)
-        except (TypeError, ValueError):
-            continue
-        if duration > 0:
+        duration = _to_float(value)
+        if duration is not None and duration > 0:
             return duration
     return 0.0
+
+
+def _to_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _to_int(value: object) -> int | None:
@@ -221,9 +255,21 @@ def _display_dimensions(stream: dict | None) -> tuple[int | None, int | None]:
     height = _to_int(stream.get("height"))
     if not width or not height:
         return None, None
+    try:
+        sar = Fraction(str(stream.get("sample_aspect_ratio", "1:1")).replace(":", "/"))
+    except (ValueError, ZeroDivisionError):
+        sar = Fraction(1)
+    if sar <= 0:
+        sar = Fraction(1)
     rotation = _rotation(stream)
     if rotation % 180:
         width, height = height, width
+        sar = 1 / sar
+    # Expand one axis to make pixels square without discarding source samples.
+    if sar >= 1:
+        width = math.ceil(width * sar)
+    else:
+        height = math.ceil(height / sar)
     return width, height
 
 

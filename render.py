@@ -46,12 +46,20 @@ class RenderCancelled(RenderError):
     pass
 
 
+class AudioConversionRequired(RenderError):
+    pass
+
+
 class RenderJob:
     def __init__(self, cancel_error: LogFn | None = None) -> None:
         self._process: subprocess.Popen[str] | None = None
         self._cancelled = False
         self._lock = threading.Lock()
         self._cancel_error = cancel_error
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     def cancel(self) -> None:
         with self._lock:
@@ -82,6 +90,8 @@ class RenderJob:
         output_dir: str | Path | None = None,
         log: LogFn = print,
         progress: ProgressFn | None = None,
+        *,
+        allow_audio_conversion: bool = False,
     ) -> Path:
         audio = Path(audio_path).expanduser().resolve()
         intro = Path(intro_path).expanduser().resolve() if intro_path else None
@@ -94,6 +104,9 @@ class RenderJob:
         log(f"ffprobe: {ffprobe}")
 
         audio_info = probe_audio(audio, ffprobe, runner=self._run_probe)
+        audio_codec_args, audio_decision = _audio_output_args(
+            audio_info, allow_audio_conversion=allow_audio_conversion,
+        )
         videos = {"INTRO": intro, "LOOP": loop, "OUTRO": outro}
         selected = {label: path for label, path in videos.items() if path}
         if not selected:
@@ -122,7 +135,6 @@ class RenderJob:
         if middle_duration <= 0:
             raise RenderError("Audio is too short for selected intro/outro")
 
-        audio_codec_args, audio_decision = _audio_output_args(audio_info)
         fast_encoder = None
         if sys.platform == "win32":
             fast_encoder = "aac_mf"
@@ -259,6 +271,7 @@ class RenderJob:
                 log("Step 6: copying video and muxing audio")
                 cmd = [
                     ffmpeg, "-n", "-nostdin", "-hide_banner", "-f", "concat", "-i", str(listing),
+                    "-itsoffset", f"{-audio_info.audio_start_offset:.9f}",
                     "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
                     "-t", f"{audio_info.duration:.6f}", "-c:v", "copy",
                     *audio_codec_args, "-movflags", "+faststart",
@@ -272,6 +285,11 @@ class RenderJob:
                     raise RenderError(
                         f"Final video has {final_frames} frames; expected {total_frames}"
                     )
+                output_audio = probe_audio(partial_output, ffprobe, runner=self._run_probe)
+                tolerance = max(0.1, 1 / float(target_fps))
+                if (abs(output_audio.duration - audio_info.duration) > tolerance
+                        or abs(output_audio.audio_start_offset) > tolerance):
+                    raise RenderError("Output audio timing does not match the selected source")
                 if self._cancelled:
                     raise RenderCancelled("Render cancelled")
             output = _publish_output(partial_output, audio, output_dir)
@@ -415,14 +433,19 @@ def render_video(
     output_dir: str | Path | None = None,
     log: LogFn = print,
     progress: ProgressFn | None = None,
+    *,
+    allow_audio_conversion: bool = False,
 ) -> Path:
     return RenderJob().render(
-        audio_path, intro_path, loop_path, outro_path, output_dir, log, progress
+        audio_path, intro_path, loop_path, outro_path, output_dir, log, progress,
+        allow_audio_conversion=allow_audio_conversion,
     )
 
 
 def _audio_output_args(
     info: StreamInfo, fast_encoder: str | None = None,
+    *,
+    allow_audio_conversion: bool = False,
 ) -> tuple[list[str], str]:
     codec = (info.audio_codec or "").lower()
     rate = info.audio_sample_rate
@@ -432,6 +455,20 @@ def _audio_output_args(
 
     resampling = f"; resampled from {rate or 'unknown'} Hz" if rate != 48000 else ""
     if codec in LOSSLESS_AUDIO_CODECS or codec.startswith("pcm_"):
+        floating = ((info.audio_sample_format or "").startswith(("flt", "dbl"))
+                    or codec.startswith("pcm_f"))
+        if floating or (info.audio_bits_per_sample or 0) > 24:
+            if not allow_audio_conversion:
+                raise AudioConversionRequired(
+                    "This audio cannot be preserved exactly in ALAC.\n\n"
+                    "Continuing converts it to 24-bit audio and reduces its precision. "
+                    "Floating-point peaks above 0 dBFS will be clipped. "
+                    "The source file is not changed.\n\nContinue with 24-bit audio?"
+                )
+            return ["-c:a", "alac", "-sample_fmt", "s32p", "-bits_per_raw_sample", "24"], (
+                f"{source} -> 24-bit ALAC (precision conversion confirmed); "
+                "source sample rate and channels preserved"
+            )
         return ["-c:a", "alac"], (
             f"{source} -> ALAC, source sample rate and channels preserved"
         )
@@ -458,17 +495,25 @@ def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, Fraction]:
     weakest = min(infos, key=lambda info: (info.width or 0) * (info.height or 0))
     width = weakest.width or 0
     height = weakest.height or 0
-    width -= width % 2
-    height -= height % 2
+    width += width % 2
+    height += height % 2
+    if width < 2 or height < 2:
+        raise RenderError("Video resolution is too small for H.264 output")
     frame_rate = min(info.frame_rate for info in infos if info.frame_rate is not None)
     return width, height, frame_rate
 
 
 def _video_filter(width: int, height: int, frame_rate: str) -> str:
+    # Make pixels square by expanding, then fit the complete frame in one pass.
+    pixel_aspect = "if(gt(sar,0),sar,1)"
+    display_width = f"iw*max(1,{pixel_aspect})"
+    display_height = f"ih/min(1,{pixel_aspect})"
+    factor = f"min(1,min({width}/({display_width}),{height}/({display_height})))"
     return (
-        f"scale='min(iw,{width})':'min(ih,{height})':force_original_aspect_ratio=decrease,"
+        f"scale='min({width},max(2,ceil({display_width}*{factor}/2)*2))':"
+        f"'min({height},max(2,ceil({display_height}*{factor}/2)*2))',setsar=1,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-        f"fps={frame_rate},format=yuv420p,setsar=1"
+        f"fps={frame_rate},format=yuv420p"
     )
 
 

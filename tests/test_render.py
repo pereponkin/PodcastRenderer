@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import render
-from media_probe import StreamInfo
+from media_probe import ProbeError, StreamInfo
 from render import (
     RenderCancelled, RenderError, RenderJob, _audio_output_args,
     _handle_progress_line, choose_video_target,
@@ -16,6 +16,25 @@ from render import (
 
 
 class RenderJobTests(unittest.TestCase):
+    def test_missing_or_truncated_output_audio_is_not_published(self) -> None:
+        source = StreamInfo(duration=10, has_audio=True, audio_codec="aac")
+        video = StreamInfo(duration=2, has_video=True, width=64, height=64,
+                           frame_rate=Fraction(30))
+        for result in (ProbeError("AUDIO has no readable audio stream"),
+                       StreamInfo(duration=1, has_audio=True, audio_codec="aac")):
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                job = RenderJob()
+                with (patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
+                      patch("render.probe_audio", side_effect=[source, result]),
+                      patch("render.probe_video", return_value=video),
+                      patch.object(job, "_run", side_effect=self._complete_stage)):
+                    with self.assertRaises((ProbeError, RenderError)):
+                        job.render(folder / "audio.m4a", None, folder / "loop.mp4", None,
+                                   folder, log=lambda _: None)
+                self.assertFalse((folder / "audio_video.mp4").exists())
+                self.assertEqual(list(folder.glob("*.partial.mp4")), [])
+
     def test_audio_output_policy_follows_source_codec(self) -> None:
         aac_48 = StreamInfo(duration=1.0, audio_codec="aac", audio_sample_rate=48000)
         aac_44 = StreamInfo(duration=1.0, audio_codec="aac", audio_sample_rate=44100)
