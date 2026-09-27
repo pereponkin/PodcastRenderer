@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -335,6 +336,8 @@ class RenderIntegrationTests(unittest.TestCase):
             self.assertLess(data.index(b"moov"), data.index(b"mdat"))
             if sys.platform == "win32":
                 self.assertTrue(any("Windows Media Foundation" in line for line in logs))
+            elif sys.platform == "darwin" and platform.machine() == "x86_64":
+                self.assertTrue(any("Apple AudioToolbox" in line for line in logs))
             else:
                 self.assertTrue(any("VBR q=10" in line for line in logs))
 
