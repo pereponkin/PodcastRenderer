@@ -104,11 +104,3 @@ TkinterDnD2 provides the Python drag-and-drop wrapper under the MIT license.
 TkDND provides the bundled native Tcl/Tk drag-and-drop extension under its
 own license terms. Their notices are included in
 `licenses/TkinterDnD2-MIT.txt` and `licenses/TkDND-license.terms`.
-
-## Inno Setup
-
-- Project: https://jrsoftware.org/isinfo.php
-- Source code: https://github.com/jrsoftware/issrc
-
-The Windows installer is generated with Inno Setup. Its license text is
-included as `licenses/Inno-Setup-LICENSE.txt`.

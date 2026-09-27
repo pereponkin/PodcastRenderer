@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from media_probe import probe_audio, probe_video, require_tools
-from render import RenderJob
+from render import AudioConversionRequired, RenderJob
 
 
 class RenderIntegrationTests(unittest.TestCase):
@@ -17,6 +18,8 @@ class RenderIntegrationTests(unittest.TestCase):
         try:
             cls.ffmpeg, cls.ffprobe = require_tools()
         except RuntimeError as exc:
+            if os.environ.get("CI", "").lower() == "true":
+                raise
             raise unittest.SkipTest(str(exc)) from exc
 
     def run_media(self, *args: str | Path) -> str:
@@ -33,6 +36,101 @@ class RenderIntegrationTests(unittest.TestCase):
         self.run_media("-f", "lavfi", "-i", source, "-frames:v", str(frames),
                        "-c:v", "mpeg4", "-q:v", "5", path)
         return path
+
+    def test_delayed_audio_from_video_is_copied_from_zero(self) -> None:
+        for codec in ("alac", "aac"):
+            with self.subTest(codec=codec), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                loop = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+                audio = folder / "delayed.mp4"
+                self.run_media(
+                    "-f", "lavfi", "-i", "color=s=64x64:r=30:duration=2",
+                    "-itsoffset", "1", "-f", "lavfi", "-i",
+                    "sine=sample_rate=48000:duration=0.5",
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "mpeg4", "-c:a", codec, audio,
+                )
+                source_info = probe_audio(audio, self.ffprobe)
+                self.assertGreater(source_info.audio_start_offset, 0.9)
+
+                output = RenderJob().render(audio, None, loop, None, folder, log=lambda _: None)
+
+                result = probe_audio(output, self.ffprobe)
+                self.assertLess(abs(result.audio_start_offset), 0.001)
+                self.assertAlmostEqual(result.duration, source_info.duration, delta=0.03)
+                self.assertEqual(
+                    self.run_media("-i", audio, "-map", "0:a:0", "-c:a", "copy", "-f", "streamhash", "-"),
+                    self.run_media("-i", output, "-map", "0:a:0", "-c:a", "copy", "-f", "streamhash", "-"),
+                )
+
+    def test_mkv_duration_uses_audio_track_including_nonzero_start(self) -> None:
+        for offset in (0, 1):
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                loop = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+                audio = folder / "short audio.mkv"
+                self.run_media(
+                    "-f", "lavfi", "-i", "color=s=64x64:r=30:duration=2",
+                    "-itsoffset", str(offset), "-f", "lavfi", "-i",
+                    "sine=sample_rate=48000:duration=0.5",
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "mpeg4", "-c:a", "pcm_s16le", audio,
+                )
+                self.assertAlmostEqual(probe_audio(audio, self.ffprobe).duration, 0.5, places=3)
+
+                output = RenderJob().render(audio, None, loop, None, folder, log=lambda _: None)
+
+                self.assertAlmostEqual(probe_video(output, "OUTPUT", self.ffprobe).duration,
+                                       0.5, delta=1 / 30)
+                self.assertAlmostEqual(probe_audio(output, self.ffprobe).duration, 0.5, places=3)
+
+    def test_anamorphic_video_keeps_display_proportions(self) -> None:
+        for sar, rotation, dimensions in (("4/3", 0, (160, 90)),
+                                           ("1/2", 0, (60, 90)),
+                                           ("3/2", 90, (60, 120))):
+            with self.subTest(sar=sar, rotation=rotation), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                source = folder / "source.mp4"
+                self.run_media("-f", "lavfi", "-i", "testsrc2=s=120x90:r=30:duration=0.4",
+                               "-vf", f"setsar={sar}", "-c:v", "libx264", source)
+                if rotation:
+                    rotated = folder / "rotated.mp4"
+                    self.run_media("-display_rotation", str(rotation), "-i", source,
+                                   "-c", "copy", rotated)
+                    source = rotated
+                audio = folder / "audio.wav"
+                self.run_media("-f", "lavfi", "-i", "sine=duration=0.5", audio)
+
+                output = RenderJob().render(audio, None, source, None, folder, log=lambda _: None)
+
+                data = json.loads(subprocess.run(
+                    [self.ffprobe, "-v", "error", "-select_streams", "v:0",
+                     "-show_streams", "-of", "json", str(output)],
+                    capture_output=True, text=True, check=True, timeout=15,
+                ).stdout)["streams"][0]
+                self.assertEqual((data["width"], data["height"]), dimensions)
+                self.assertEqual(data["sample_aspect_ratio"], "1:1")
+
+    def test_high_precision_wav_requires_confirmation_before_conversion(self) -> None:
+        for codec in ("pcm_s32le", "pcm_f32le"):
+            with self.subTest(codec=codec), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                source = folder / "source.wav"
+                loop = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+                self.run_media("-f", "lavfi", "-i", "sine=sample_rate=48000:duration=0.5",
+                               "-c:a", codec, source)
+                original = source.read_bytes()
+                with self.assertRaisesRegex(AudioConversionRequired, "24-bit"):
+                    RenderJob().render(source, None, loop, None, folder, log=lambda _: None)
+                self.assertFalse((folder / "source_video.mp4").exists())
+                self.assertEqual(list(folder.glob("*.partial.mp4")), [])
+
+                output = RenderJob().render(source, None, loop, None, folder, log=lambda _: None,
+                                            allow_audio_conversion=True)
+
+                result = probe_audio(output, self.ffprobe)
+                self.assertEqual(result.audio_bits_per_sample, 24)
+                self.assertEqual(result.audio_sample_rate, 48000)
+                self.assertEqual(result.audio_channels, 1)
+                self.assertEqual(source.read_bytes(), original)
 
     def test_repeated_period_is_copied_with_clean_timestamps_and_aac(self) -> None:
         rate = Fraction(30_000, 1_001)
@@ -151,6 +249,22 @@ class RenderIntegrationTests(unittest.TestCase):
             alac_delta = abs(probe_video(output, "OUTPUT", self.ffprobe).duration
                              - output_info.duration)
             self.assertLess(alac_delta, 0.04)
+
+    def test_24_bit_pcm_is_preserved_without_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            video = self.make_video(folder, "loop.mp4", "testsrc2=s=64x64:r=30", 7)
+            audio = folder / "24-bit.wav"
+            self.run_media("-f", "lavfi", "-i", "aevalsrc=0.123456*sin(2*PI*440*t):d=0.5",
+                           "-c:a", "pcm_s24le", audio)
+
+            output = RenderJob().render(audio, None, video, None, folder, log=lambda _: None)
+
+            self.assertEqual(probe_audio(output, self.ffprobe).audio_bits_per_sample, 24)
+            self.assertEqual(
+                self.run_media("-i", audio, "-c:a", "pcm_s32le", "-f", "md5", "-"),
+                self.run_media("-i", output, "-map", "0:a:0", "-c:a", "pcm_s32le", "-f", "md5", "-"),
+            )
 
     def test_flac_44100_keeps_lossless_audio_and_sample_rate(self) -> None:
         with tempfile.TemporaryDirectory(prefix="podcast-renderer-test-") as temporary:

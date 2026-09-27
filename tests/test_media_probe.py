@@ -11,6 +11,21 @@ from media_probe import ProbeError, find_tool, probe_audio, probe_video
 
 
 class MediaProbeTests(unittest.TestCase):
+    def test_audio_timestamps_are_relative_to_container_start(self) -> None:
+        payload = {"format": {"start_time": "10", "duration": "20"}, "streams": [
+            {"codec_type": "audio", "start_time": "11.5", "duration_ts": 24000,
+             "time_base": "1/48000", "sample_fmt": "s32", "bits_per_raw_sample": "24"},
+        ]}
+        completed = subprocess.CompletedProcess([], 0, json.dumps(payload), "")
+        with tempfile.TemporaryDirectory() as folder:
+            media = Path(folder) / "source.mkv"
+            media.touch()
+            with patch("media_probe.subprocess.run", return_value=completed):
+                info = probe_audio(media, "ffprobe")
+        self.assertEqual(info.audio_start_offset, 1.5)
+        self.assertEqual(info.duration, 0.5)
+        self.assertEqual(info.audio_bits_per_sample, 24)
+
     def test_audio_duration_comes_from_first_audio_stream(self) -> None:
         payload = {
             "format": {"duration": "20.0"},

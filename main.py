@@ -10,7 +10,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from render import FINALIZING_PROGRESS, MUX_START_PROGRESS, RenderCancelled, RenderJob
+from render import (
+    FINALIZING_PROGRESS, MUX_START_PROGRESS, AudioConversionRequired, RenderCancelled, RenderJob,
+)
 
 
 APP_NAME = "Podcast Renderer"
@@ -30,7 +32,7 @@ class App(TkinterDnD.Tk):
                 pass
         self.geometry("820x520")
         self.minsize(720, 440)
-        self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.log_queue: queue.Queue[tuple[str, str | tuple[str, dict[str, str]]]] = queue.Queue()
         self.entries: dict[str, tk.StringVar] = {}
         self.render_button: ttk.Button | None = None
         self.progress_canvas: tk.Canvas | None = None
@@ -162,6 +164,9 @@ class App(TkinterDnD.Tk):
             messagebox.showerror("Output folder not found", f"OUTPUT folder does not exist:\n{output}")
             return
 
+        self._start_render(paths)
+
+    def _start_render(self, paths: dict[str, str], allow_audio_conversion: bool = False) -> None:
         self.log.delete("1.0", "end")
         self._append(APP_TITLE)
         self._set_busy(True)
@@ -173,9 +178,10 @@ class App(TkinterDnD.Tk):
         self.current_job = RenderJob(
             cancel_error=lambda line: self.log_queue.put(("cancel_error", line))
         )
-        threading.Thread(target=self._render_worker, args=(paths,), daemon=True).start()
+        threading.Thread(target=self._render_worker,
+                         args=(paths, allow_audio_conversion), daemon=True).start()
 
-    def _render_worker(self, paths: dict[str, str]) -> None:
+    def _render_worker(self, paths: dict[str, str], allow_audio_conversion: bool = False) -> None:
         try:
             assert self.current_job is not None
             output = self.current_job.render(
@@ -186,7 +192,10 @@ class App(TkinterDnD.Tk):
                 paths["OUTPUT"],
                 log=lambda line: self.log_queue.put(("log", line)),
                 progress=lambda value: self.log_queue.put(("progress", str(value))),
+                allow_audio_conversion=allow_audio_conversion,
             )
+        except AudioConversionRequired as exc:
+            self.log_queue.put(("audio_conversion", (str(exc), paths)))
         except RenderCancelled as exc:
             self.log_queue.put(("cancelled", str(exc)))
         except Exception as exc:
@@ -215,7 +224,18 @@ class App(TkinterDnD.Tk):
         try:
             while True:
                 kind, text = self.log_queue.get_nowait()
-                if kind == "log":
+                if kind == "audio_conversion":
+                    message, paths = text
+                    cancelled = self.current_job is None or self.current_job.cancelled
+                    self._set_busy(False)
+                    if self._closing:
+                        self.destroy()
+                        return
+                    if not cancelled and messagebox.askokcancel(
+                        "Audio precision", message, icon="warning", default="cancel",
+                    ):
+                        self._start_render(paths, allow_audio_conversion=True)
+                elif kind == "log":
                     self._append(text)
                 elif kind == "progress":
                     self.progress_value = float(text)

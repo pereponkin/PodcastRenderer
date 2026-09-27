@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from main import APP_TITLE, APP_VERSION, App, find_video_siblings
-from render import FINALIZING_PROGRESS, MUX_START_PROGRESS
+from render import AudioConversionRequired, FINALIZING_PROGRESS, MUX_START_PROGRESS
 
 
 class VideoSiblingTests(unittest.TestCase):
@@ -47,6 +47,43 @@ class VersionTests(unittest.TestCase):
 
 
 class WindowLifecycleTests(unittest.TestCase):
+    def test_precision_warning_returns_to_ui_without_rendering(self) -> None:
+        app = object.__new__(App)
+        app.current_job = Mock()
+        app.current_job.render.side_effect = AudioConversionRequired("Convert to 24-bit?")
+        app.log_queue = queue.Queue()
+        paths = {"AUDIO": "audio.wav", "INTRO": "", "LOOP": "loop.mp4",
+                 "OUTRO": "", "OUTPUT": "output"}
+
+        App._render_worker(app, paths)
+
+        self.assertEqual(app.log_queue.get_nowait(),
+                         ("audio_conversion", ("Convert to 24-bit?", paths)))
+
+    def test_precision_conversion_resumes_only_after_confirmation(self) -> None:
+        for consent, cancelled, closing in ((True, False, False), (False, False, False),
+                                             (True, True, False), (True, False, True)):
+            with self.subTest(consent=consent, cancelled=cancelled, closing=closing):
+                app = object.__new__(App)
+                app.current_job = Mock(cancelled=cancelled)
+                app.log_queue = queue.Queue()
+                paths = {"AUDIO": "original.wav"}
+                app.log_queue.put(("audio_conversion", ("Convert?", paths)))
+                app._closing = closing
+                app.render_started_at = None
+                app._set_busy = Mock()
+                app._start_render = Mock()
+                app.after = Mock()
+                app.destroy = Mock()
+                with patch("main.messagebox.askokcancel", return_value=consent) as prompt:
+                    App._drain_log(app)
+                if consent and not cancelled and not closing:
+                    app._start_render.assert_called_once_with(paths, allow_audio_conversion=True)
+                else:
+                    app._start_render.assert_not_called()
+                if cancelled or closing:
+                    prompt.assert_not_called()
+
     def test_render_worker_uses_automatic_audio_output(self) -> None:
         app = object.__new__(App)
         app.current_job = Mock()

@@ -19,21 +19,26 @@ Users do not need Python, Homebrew, FFmpeg, or programming tools.
 
 ### Windows
 
-1. Download `PodcastRenderer-<version>-Windows-Setup.exe` from the latest
+1. Download `PodcastRenderer-<version>-Windows-Portable.zip` from the latest
    release.
-2. Open it and follow the installer. Administrator rights are not required.
-3. Start **Podcast Renderer** from the Start menu.
+2. Right-click the ZIP, choose **Extract All**, and select a folder you can write to.
+3. Open the extracted folder and run `PodcastRenderer.exe`.
 
-The installer is intentionally unsigned because this project does not use a
+The portable ZIP is the Windows distribution. No installation or administrator
+rights are required; Python and FFmpeg are included. Extract the archive before
+launching the app. You can create a shortcut to `PodcastRenderer.exe` yourself.
+
+The application is intentionally unsigned because this project does not use a
 paid code-signing certificate. Windows SmartScreen may show **Windows protected
 your PC**. When the file came from the official release page above:
 
 1. Click **More info**.
-2. Check that the app name is `PodcastRenderer-<version>-Windows-Setup.exe`.
+2. Check that the app name is `PodcastRenderer.exe`.
 3. Click **Run anyway**.
 
-`PodcastRenderer-<version>-Windows-Portable.zip` is also available. Extract it
-to a normal folder and run `PodcastRenderer.exe`; no installation is needed.
+To update, close the app and extract the new ZIP into a new folder. If you used
+an older Windows installer, you can uninstall that version separately through
+Windows Settings after checking that the portable app works.
 
 ### macOS
 
@@ -127,6 +132,8 @@ Audio output is automatic. AAC is copied without re-encoding, including 44.1 kHz
 
 ALAC keeps lossless source audio lossless in the MP4 delivery master, avoiding an extra lossy encode before a platform processes the upload. Limited direct browser playback of ALAC is a separate concern from platform ingestion. Acceptance of ALAC-in-MP4 depends on the destination: [YouTube's recommended MP4 upload settings](https://support.google.com/youtube/answer/1722171?hl=en) list AAC-LC, Opus, or Eclipsa Audio, not ALAC. Check the target platform's requirements or upload a short test before relying on ALAC delivery. AAC-LC remains the more widely documented option for direct web playback and YouTube uploads.
 
+Lossless preservation applies to integer audio up to 24 bits. For higher bit depths or floating-point audio, the app asks for confirmation before converting to 24-bit ALAC. Conversion reduces precision, and floating-point peaks above 0 dBFS are clipped. Cancel leaves the source untouched and produces no output; approval applies only to that render. The source file is never modified.
+
 ## Build Standalone with PyInstaller
 
 Install the pinned runtime and build dependencies:
@@ -143,7 +150,7 @@ python -m PyInstaller --onefile --windowed --collect-all tkinterdnd2 --name Podc
 
 The executable will be in `dist\PodcastRenderer.exe`. FFmpeg still needs to be installed on `PATH`, or you can place `ffmpeg.exe` and `ffprobe.exe` next to the executable.
 
-## Build Windows Packages
+## Build the Windows Portable Package
 
 Download the pinned, verified Windows FFmpeg binaries:
 
@@ -151,10 +158,10 @@ Download the pinned, verified Windows FFmpeg binaries:
 .\scripts\fetch_ffmpeg_windows.ps1
 ```
 
-Install [Inno Setup 6 or 7](https://jrsoftware.org/isdl.php), then run:
+Then run:
 
 ```powershell
-.\build_windows_installer.ps1
+.\build_windows.ps1
 ```
 
 The build verifies FFmpeg and creates:
@@ -162,7 +169,14 @@ The build verifies FFmpeg and creates:
 ```text
 dist\PodcastRenderer.exe
 dist\PodcastRenderer-Windows-Portable.zip
-dist\PodcastRenderer-Setup.exe
+```
+
+The portable archive contains the standalone executable, third-party notices,
+and licenses. No installer compiler is required. To check its contents and
+launch the extracted app:
+
+```powershell
+python scripts/check_windows_portable.py dist/PodcastRenderer-Windows-Portable.zip
 ```
 
 macOS:
@@ -202,15 +216,14 @@ notarized.
 Pushing a version tag such as `v1.5.0` starts `.github/workflows/release.yml`.
 The tag must match `APP_VERSION` in `main.py`. GitHub Actions then:
 
-1. runs all unit tests on Windows, Apple Silicon macOS, and Intel macOS;
-2. builds the Windows installer and portable archive;
+1. runs unit tests and real media renders on Windows, Apple Silicon macOS, and Intel macOS;
+2. builds the Windows portable archive and checks that its extracted app launches;
 3. builds Apple Silicon and Intel DMG/ZIP packages;
 4. generates SHA-256 checksums;
 5. publishes every package and notice as a GitHub Release.
 
-The release workflow downloads FFmpeg `n8.1.2-1` and Inno Setup `7.0.2` from
-immutable upstream releases and verifies their recorded SHA-256 values before
-using them.
+The release workflow downloads FFmpeg `n8.1.2-1` from an immutable upstream
+release and verifies its recorded SHA-256 values before using it.
 
 ## License and Third-Party Notices
 
@@ -239,4 +252,7 @@ python -m unittest discover -s tests -v
 ```
 
 GitHub Actions runs the test suite on Windows, Apple Silicon macOS, and Intel
-macOS for every push to `main` and every pull request.
+macOS for every push to `main` and every pull request. These jobs download the
+verified FFmpeg binaries and run both unit tests and real media render tests;
+missing FFmpeg fails CI. Locally, media render tests are skipped if FFmpeg is unavailable.
+CI also builds and launches the extracted Windows portable app and both macOS app bundles.

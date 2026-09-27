@@ -33,11 +33,20 @@ jobs:
       - name: Install runtime dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Download verified Windows FFmpeg binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/fetch_ffmpeg_windows.ps1
+
+      - name: Download verified macOS FFmpeg binaries
+        if: runner.os == 'macOS'
+        run: bash scripts/fetch_ffmpeg_macos.sh
+
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
   build-windows:
-    name: Build Windows packages
+    name: Build Windows portable package
     needs: test
     runs-on: windows-latest
     timeout-minutes: 30
@@ -65,48 +74,24 @@ jobs:
         shell: pwsh
         run: .\scripts\fetch_ffmpeg_windows.ps1
 
-      - name: Install pinned Inno Setup
+      - name: Build portable archive
         shell: pwsh
-        run: |
-          $url = "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe"
-          $expected = "5AD54CA3DEF786F8F4212552E54CC6D8D61329E2D24A1CFEE0571D42C2684FF1"
-          $installer = Join-Path $env:RUNNER_TEMP "innosetup.exe"
-          $destination = Join-Path $env:RUNNER_TEMP "InnoSetup"
-          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $installer
-          $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
-          if ($actual -ne $expected) {
-            throw "Inno Setup SHA-256 mismatch"
-          }
-          $process = Start-Process -FilePath $installer -ArgumentList @(
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/CURRENTUSER",
-            "/DIR=$destination"
-          ) -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "Inno Setup installation failed with exit code $($process.ExitCode)"
-          }
-          "ISCC_PATH=$(Join-Path $destination 'ISCC.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append
+        run: .\build_windows.ps1
 
-      - name: Build EXE and installer
-        shell: pwsh
-        run: .\build_windows_installer.ps1 -IsccPath $env:ISCC_PATH
+      - name: Check and launch portable package
+        run: python scripts/check_windows_portable.py dist/PodcastRenderer-Windows-Portable.zip
 
       - name: Give packages versioned names
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.TrimStart("v")
-          Move-Item "dist\PodcastRenderer-Setup.exe" "dist\PodcastRenderer-$version-Windows-Setup.exe"
           Move-Item "dist\PodcastRenderer-Windows-Portable.zip" "dist\PodcastRenderer-$version-Windows-Portable.zip"
 
       - name: Upload Windows packages
         uses: actions/upload-artifact@v7
         with:
           name: release-windows
-          path: |
-            dist/PodcastRenderer-*-Windows-Setup.exe
-            dist/PodcastRenderer-*-Windows-Portable.zip
+          path: dist/PodcastRenderer-*-Windows-Portable.zip
           if-no-files-found: error
           retention-days: 7
 
