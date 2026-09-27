@@ -25,7 +25,7 @@ def check_portable(archive_path: Path) -> None:
         environment = os.environ.copy()
         environment.pop("PYTHONHOME", None)
         environment.pop("PYTHONPATH", None)
-        environment["PATH"] = str(Path(environment["SystemRoot"]) / "System32")
+        environment["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
         subprocess.run([str(extracted / "PodcastRenderer.exe"), "--smoke-test"],
                        cwd=extracted, env=environment, check=True, timeout=60)
     print("Portable archive contents and application launch: OK")
