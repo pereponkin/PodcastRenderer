@@ -495,8 +495,8 @@ def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, Fraction]:
     weakest = min(infos, key=lambda info: (info.width or 0) * (info.height or 0))
     width = weakest.width or 0
     height = weakest.height or 0
-    width -= width % 2
-    height -= height % 2
+    width += width % 2
+    height += height % 2
     if width < 2 or height < 2:
         raise RenderError("Video resolution is too small for H.264 output")
     frame_rate = min(info.frame_rate for info in infos if info.frame_rate is not None)
@@ -504,12 +504,14 @@ def choose_video_target(infos: list[StreamInfo]) -> tuple[int, int, Fraction]:
 
 
 def _video_filter(width: int, height: int, frame_rate: str) -> str:
-    # Fit display dimensions, including non-square pixels, with one scaling pass.
-    display_width = "iw*if(gt(sar,0),sar,1)"
-    factor = f"min(1,min({width}/({display_width}),{height}/ih))"
+    # Make pixels square by expanding, then fit the complete frame in one pass.
+    pixel_aspect = "if(gt(sar,0),sar,1)"
+    display_width = f"iw*max(1,{pixel_aspect})"
+    display_height = f"ih/min(1,{pixel_aspect})"
+    factor = f"min(1,min({width}/({display_width}),{height}/({display_height})))"
     return (
-        f"scale='max(2,trunc({display_width}*{factor}/2)*2)':"
-        f"'max(2,trunc(ih*{factor}/2)*2)',setsar=1,"
+        f"scale='min({width},max(2,ceil({display_width}*{factor}/2)*2))':"
+        f"'min({height},max(2,ceil({display_height}*{factor}/2)*2))',setsar=1,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
         f"fps={frame_rate},format=yuv420p"
     )

@@ -265,7 +265,11 @@ def _display_dimensions(stream: dict | None) -> tuple[int | None, int | None]:
     if rotation % 180:
         width, height = height, width
         sar = 1 / sar
-    width = max(1, int(width * sar))
+    # Expand one axis to make pixels square without discarding source samples.
+    if sar >= 1:
+        width = math.ceil(width * sar)
+    else:
+        height = math.ceil(height / sar)
     return width, height
 
 

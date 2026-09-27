@@ -113,8 +113,9 @@ Video selection rules:
 - `INTRO + LOOP`: intro starts at 00:00, loop fills the rest.
 - `LOOP + OUTRO`: loop fills the beginning, outro ends with the audio.
 - `INTRO + OUTRO` without `LOOP` is not allowed because there is no middle filler.
-- With one video, its display resolution and frame rate are preserved as the output target.
-- With multiple videos, the output uses the complete resolution of the source with the lowest pixel count and the lowest source frame rate. Sources are never enlarged; aspect ratio is preserved with padding when needed, including portrait video.
+- Output uses square pixels. After applying rotation, non-square source pixels are converted by expanding one axis: 1440×1080 at SAR 4:3 becomes 1920×1080; 90×120 at SAR 2:3 becomes 90×180. Neither source dimension is reduced just to convert the pixel shape.
+- With one video, that square-pixel resolution and the source frame rate are used as the output target. Dimensions are rounded up to even numbers for H.264.
+- With multiple videos, the output uses the square-pixel resolution with the lowest pixel count and the lowest source frame rate. Each complete frame is fitted inside that target with padding when needed, including portrait video. Larger sources may be reduced to fit; smaller sources are not enlarged beyond their square-pixel resolution, apart from rounding to even dimensions. No edges are cropped. Aspect ratios are preserved to pixel-rounding precision. Scaling and H.264 encoding are not lossless.
 
 The output is saved in the selected `OUTPUT` folder as:
 
@@ -213,7 +214,7 @@ notarized.
 
 ## Automated Releases
 
-Pushing a version tag such as `v1.5.0` starts `.github/workflows/release.yml`.
+Pushing a version tag such as `v1.6.0` starts `.github/workflows/release.yml`.
 The tag must match `APP_VERSION` in `main.py`. GitHub Actions then:
 
 1. runs unit tests and real media renders on Windows, Apple Silicon macOS, and Intel macOS;

@@ -85,8 +85,10 @@ class RenderIntegrationTests(unittest.TestCase):
 
     def test_anamorphic_video_keeps_display_proportions(self) -> None:
         for sar, rotation, dimensions in (("4/3", 0, (160, 90)),
-                                           ("1/2", 0, (60, 90)),
-                                           ("3/2", 90, (60, 120))):
+                                           ("1/2", 0, (120, 180)),
+                                           ("3/2", 90, (90, 180)),
+                                           ("1/1", 0, (120, 90)),
+                                           ("1/1", 90, (90, 120))):
             with self.subTest(sar=sar, rotation=rotation), tempfile.TemporaryDirectory() as temporary:
                 folder = Path(temporary)
                 source = folder / "source.mp4"
@@ -109,6 +111,60 @@ class RenderIntegrationTests(unittest.TestCase):
                 ).stdout)["streams"][0]
                 self.assertEqual((data["width"], data["height"]), dimensions)
                 self.assertEqual(data["sample_aspect_ratio"], "1:1")
+
+    def test_mixed_video_keeps_all_edges_and_round_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            sources = []
+            for index, (sar, rotation) in enumerate(((Fraction(4, 3), 0),
+                                                    (Fraction(1, 2), 0),
+                                                    (Fraction(3, 2), 90))):
+                # Border reveals cropping; a SAR-corrected circle reveals stretching.
+                pixels = bytes(
+                    160 if x < 4 or x >= 116 or y < 4 or y >= 86 else
+                    255 if ((x - 59.5) * float(sar)) ** 2 + (y - 44.5) ** 2 < 12 ** 2 else 0
+                    for y in range(90) for x in range(120)
+                )
+                picture = folder / f"pattern{index}.pgm"
+                picture.write_bytes(b"P5\n120 90\n255\n" + pixels)
+                source = folder / f"source{index}.mp4"
+                self.run_media("-loop", "1", "-i", picture, "-t", "0.2", "-r", "30",
+                               "-vf", f"setsar={sar}", "-c:v", "libx264", "-pix_fmt", "yuv420p", source)
+                if rotation:
+                    rotated = folder / "rotated.mp4"
+                    self.run_media("-display_rotation", str(rotation), "-i", source,
+                                   "-c", "copy", rotated)
+                    source = rotated
+                sources.append(source)
+            audio = folder / "audio.wav"
+            self.run_media("-f", "lavfi", "-i", "sine=duration=1", audio)
+
+            output = RenderJob().render(audio, *sources, folder, log=lambda _: None)
+
+            info = probe_video(output, "OUTPUT", self.ffprobe)
+            self.assertEqual((info.width, info.height), (160, 90))
+            for timestamp, expected_width in (("0.1", 160), ("0.3", 60), ("0.9", 46)):
+                with self.subTest(timestamp=timestamp):
+                    frame = subprocess.run(
+                        [self.ffmpeg, "-nostdin", "-v", "error", "-ss", timestamp,
+                         "-i", str(output), "-frames:v", "1", "-pix_fmt", "gray",
+                         "-f", "rawvideo", "-"], capture_output=True, check=True, timeout=15,
+                    ).stdout
+                    self.assertEqual(len(frame), 160 * 90)
+                    border = [(i % 160, i // 160) for i, value in enumerate(frame) if value > 100]
+                    left, right = min(x for x, _ in border), max(x for x, _ in border)
+                    top, bottom = min(y for _, y in border), max(y for _, y in border)
+                    self.assertAlmostEqual(right - left + 1, expected_width, delta=2)
+                    self.assertEqual((top, bottom), (0, 89))
+                    for y in (top, bottom):
+                        self.assertGreater(sum(frame[y * 160 + x] > 100
+                                               for x in range(left, right + 1)), expected_width * 0.8)
+                    for x in (left, right):
+                        self.assertGreater(sum(frame[y * 160 + x] > 100 for y in range(90)), 72)
+                    circle = [(i % 160, i // 160) for i, value in enumerate(frame) if value > 230]
+                    circle_width = max(x for x, _ in circle) - min(x for x, _ in circle) + 1
+                    circle_height = max(y for _, y in circle) - min(y for _, y in circle) + 1
+                    self.assertAlmostEqual(circle_width, circle_height, delta=2)
 
     def test_high_precision_wav_requires_confirmation_before_conversion(self) -> None:
         for codec in ("pcm_s32le", "pcm_f32le"):

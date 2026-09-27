@@ -16,7 +16,7 @@ from render import (
 
 
 APP_NAME = "Podcast Renderer"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
 
 
