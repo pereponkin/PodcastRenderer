@@ -10,7 +10,7 @@ import threading
 import uuid
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from media_probe import (
     PROBE_TIMEOUT_SECONDS,
@@ -24,6 +24,22 @@ from media_probe import (
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[float], None]
+
+
+class ProgressStage(NamedTuple):
+    name: str
+    weight: float
+
+
+class StageUpdate(NamedTuple):
+    stages: tuple[ProgressStage, ...]
+    index: int
+    fraction: float
+
+
+StageProgressFn = Callable[[StageUpdate], None]
+
+
 VIDEO_CRF = 20
 VIDEO_MAXRATE = "8000k"
 VIDEO_BUFSIZE = "64000k"
@@ -92,6 +108,7 @@ class RenderJob:
         progress: ProgressFn | None = None,
         *,
         allow_audio_conversion: bool = False,
+        stage_progress: StageProgressFn | None = None,
     ) -> Path:
         audio = Path(audio_path).expanduser().resolve()
         intro = Path(intro_path).expanduser().resolve() if intro_path else None
@@ -134,6 +151,31 @@ class RenderJob:
         middle_duration = audio_info.duration - intro_duration - outro_duration
         if middle_duration <= 0:
             raise RenderError("Audio is too short for selected intro/outro")
+
+        total_frames = math.ceil(Fraction(str(audio_info.duration)) * target_fps)
+
+        prefix_stages = [ProgressStage("Measuring loop", 0.08)]
+        if intro_info:
+            prefix_stages.append(ProgressStage("Encoding intro", 0.14))
+        if outro_info:
+            prefix_stages.append(ProgressStage("Encoding outro", 0.14))
+        mux_stage = ProgressStage("Muxing and finalizing", 0.24)
+
+        def planned_stages(repeats: int, remainder: int) -> tuple[ProgressStage, ...]:
+            stages = prefix_stages.copy()
+            if repeats:
+                stages.append(ProgressStage("Encoding loop", 0.28))
+            if remainder:
+                stages.append(ProgressStage("Encoding loop tail", 0.12))
+            stages.append(mux_stage)
+            return tuple(stages)
+
+        stages = (*prefix_stages, ProgressStage("Encoding middle", 0.40), mux_stage)
+
+        def report_stage(name: str, fraction: float) -> None:
+            if stage_progress:
+                index = next(i for i, item in enumerate(stages) if item.name == name)
+                stage_progress(StageUpdate(stages, index, min(max(fraction, 0.0), 1.0)))
 
         fast_encoder = None
         if sys.platform == "win32":
@@ -191,22 +233,33 @@ class RenderJob:
             "-progress", "pipe:1", "-nostats",
         ]
 
-        def stage(start: float, end: float) -> ProgressFn | None:
-            return (lambda value: progress(start + (end - start) *
-                                           min(value / FINALIZING_PROGRESS, 1.0))) if progress else None
+        def stage(name: str, start: float, end: float) -> ProgressFn | None:
+            if not progress and not stage_progress:
+                return None
+
+            def update(value: float) -> None:
+                fraction = min(value / FINALIZING_PROGRESS, 1.0)
+                if progress:
+                    progress(start + (end - start) * fraction)
+                report_stage(name, fraction * FINALIZING_PROGRESS
+                             if name == "Muxing and finalizing" else fraction)
+
+            return update
 
         def encode(source: Path, destination: Path, duration: float,
-                   start: float, end: float, frames: int | None = None) -> int:
+                   name: str, start: float, end: float, frames: int | None = None) -> int:
             cmd = [ffmpeg, "-n", "-nostdin", "-hide_banner", "-i", str(source),
                    *video_options]
             if frames is not None:
                 cmd.extend(["-frames:v", str(frames)])
             cmd.extend([*encoder_options, str(destination)])
-            count = self._run(cmd, duration, log, stage(start, end))
+            report_stage(name, 0.0)
+            count = self._run(cmd, duration, log, stage(name, start, end))
             if count <= 0 or (frames is not None and count != frames):
                 raise RenderError(f"Unexpected frame count while encoding {source}: {count}")
             if progress:
                 progress(end)
+            report_stage(name, 1.0)
             return count
 
         try:
@@ -218,42 +271,48 @@ class RenderJob:
                     ffmpeg, "-n", "-nostdin", "-hide_banner", "-i", str(loop),
                     *video_options, "-progress", "pipe:1", "-nostats", "-f", "null", "-",
                 ]
-                period_frames = self._run(count_cmd, loop_info.duration, log, stage(0.0, 0.08))
+                report_stage("Measuring loop", 0.0)
+                period_frames = self._run(
+                    count_cmd, loop_info.duration, log, stage("Measuring loop", 0.0, 0.08)
+                )
                 if period_frames <= 0:
                     raise RenderError("LOOP has no frames after video conversion")
                 if progress:
                     progress(0.08)
+                report_stage("Measuring loop", 1.0)
 
                 parts: list[tuple[str, int]] = []
                 intro_frames = 0
                 if intro and intro_info:
                     log("Step 2: encoding intro")
-                    intro_frames = encode(intro, work / "intro.mp4", intro_info.duration, 0.08, 0.22)
+                    intro_frames = encode(intro, work / "intro.mp4", intro_info.duration,
+                                          "Encoding intro", 0.08, 0.22)
                     parts.append(("intro.mp4", intro_frames))
                 outro_frames = 0
                 if outro and outro_info:
                     log("Step 3: encoding outro")
-                    outro_frames = encode(outro, work / "outro.mp4", outro_info.duration, 0.22, 0.36)
+                    outro_frames = encode(outro, work / "outro.mp4", outro_info.duration,
+                                          "Encoding outro", 0.22, 0.36)
                 if progress:
                     progress(0.36)
 
-                total_frames = math.ceil(Fraction(str(audio_info.duration)) * target_fps)
                 middle_frames = total_frames - intro_frames - outro_frames
                 if middle_frames <= 0:
                     raise RenderError("Audio is too short for selected intro/outro")
                 repeats, remainder = divmod(middle_frames, period_frames)
+                stages = planned_stages(repeats, remainder)
                 log(f"Loop period: {period_frames} frames; middle: {middle_frames} frames")
                 log(f"Loop copies: {repeats}; tail: {remainder} frames")
 
                 if repeats:
                     log("Step 4: encoding one loop period")
                     encode(loop, work / "period.mp4", loop_info.duration,
-                           0.36, 0.64, period_frames)
+                           "Encoding loop", 0.36, 0.64, period_frames)
                     parts.extend([("period.mp4", period_frames)] * repeats)
                 if remainder:
                     log("Step 5: encoding partial loop tail")
                     encode(loop, work / "tail.mp4", remainder / target_fps,
-                           0.64, MUX_START_PROGRESS, remainder)
+                           "Encoding loop tail", 0.64, MUX_START_PROGRESS, remainder)
                     parts.append(("tail.mp4", remainder))
                 if outro_frames:
                     parts.append(("outro.mp4", outro_frames))
@@ -277,9 +336,10 @@ class RenderJob:
                     *audio_codec_args, "-movflags", "+faststart",
                     "-progress", "pipe:1", "-nostats", str(partial_output),
                 ]
+                report_stage("Muxing and finalizing", 0.0)
                 final_frames = self._run(
                     cmd, audio_info.duration, log,
-                    stage(MUX_START_PROGRESS, FINALIZING_PROGRESS),
+                    stage("Muxing and finalizing", MUX_START_PROGRESS, FINALIZING_PROGRESS),
                 )
                 if final_frames != total_frames:
                     raise RenderError(
@@ -298,6 +358,7 @@ class RenderJob:
             raise
         if progress:
             progress(1.0)
+        report_stage("Muxing and finalizing", 1.0)
         log(f"Output: {output}")
         return output
 

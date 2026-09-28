@@ -12,6 +12,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from render import (
     FINALIZING_PROGRESS, MUX_START_PROGRESS, AudioConversionRequired, RenderCancelled, RenderJob,
+    StageUpdate,
 )
 
 
@@ -32,7 +33,7 @@ class App(TkinterDnD.Tk):
                 pass
         self.geometry("820x520")
         self.minsize(720, 440)
-        self.log_queue: queue.Queue[tuple[str, str | tuple[str, dict[str, str]]]] = queue.Queue()
+        self.log_queue: queue.Queue[tuple[str, str | tuple[str, dict[str, str]] | StageUpdate]] = queue.Queue()
         self.entries: dict[str, tk.StringVar] = {}
         self.render_button: ttk.Button | None = None
         self.progress_canvas: tk.Canvas | None = None
@@ -40,6 +41,7 @@ class App(TkinterDnD.Tk):
         self.current_job: RenderJob | None = None
         self.render_started_at: float | None = None
         self.progress_value = 0.0
+        self.stage_update: StageUpdate | None = None
         self.eta_deadline: float | None = None
         self.mux_started_at: float | None = None
         self._closing = False
@@ -172,6 +174,7 @@ class App(TkinterDnD.Tk):
         self._set_busy(True)
         self.render_started_at = time.monotonic()
         self.progress_value = 0.0
+        self.stage_update = None
         self.eta_deadline = None
         self.mux_started_at = None
         self._draw_progress()
@@ -192,6 +195,7 @@ class App(TkinterDnD.Tk):
                 paths["OUTPUT"],
                 log=lambda line: self.log_queue.put(("log", line)),
                 progress=lambda value: self.log_queue.put(("progress", str(value))),
+                stage_progress=lambda value: self.log_queue.put(("stage", value)),
                 allow_audio_conversion=allow_audio_conversion,
             )
         except AudioConversionRequired as exc:
@@ -240,7 +244,8 @@ class App(TkinterDnD.Tk):
                 elif kind == "progress":
                     self.progress_value = float(text)
                     self._update_eta()
-                    self._draw_progress()
+                elif kind == "stage":
+                    self.stage_update = text
                 elif kind == "cancelled":
                     self._append("")
                     self._append(text)
@@ -267,11 +272,13 @@ class App(TkinterDnD.Tk):
                 elif kind == "done":
                     self._append("")
                     self._append("DONE: " + text)
-                    self._set_busy(False)
                     if self._closing:
+                        self._set_busy(False)
                         self.destroy()
                         return
+                    self._draw_progress()
                     messagebox.showinfo("Render complete", f"Saved:\n{text}")
+                    self._set_busy(False)
         except queue.Empty:
             pass
         if self.render_started_at is not None:
@@ -327,29 +334,36 @@ class App(TkinterDnD.Tk):
         height = max(canvas.winfo_height(), 1)
         value = max(0.0, min(self.progress_value, 1.0))
         canvas.create_rectangle(0, 0, width, height, fill="#f3f3f3", outline="")
-        if self.render_started_at is not None and value < MUX_START_PROGRESS:
-            span = max(40, width // 5)
-            phase = ((time.monotonic() - self.render_started_at) % 1.5) / 1.5
-            offset = int((width + span) * phase) - span
-            left, right = max(0, offset), min(width, offset + span)
-            if right > left:
-                canvas.create_rectangle(left, 0, right, height, fill="#4f8bd6", outline="")
-        elif value >= MUX_START_PROGRESS:
-            fraction = min(1.0, (value - MUX_START_PROGRESS) / (1.0 - MUX_START_PROGRESS))
-            fill_width = int(width * fraction)
-            if fill_width > 0:
-                canvas.create_rectangle(0, 0, fill_width, height, fill="#4f8bd6", outline="")
+        update = self.stage_update
+        if update:
+            total_weight = sum(stage.weight for stage in update.stages)
+            left = 0.0
+            for index, stage in enumerate(update.stages):
+                right = left + width * stage.weight / total_weight
+                fraction = (1.0 if index < update.index else
+                            update.fraction if index == update.index else 0.0)
+                if fraction:
+                    canvas.create_rectangle(left, 0, left + (right - left) * fraction,
+                                            height, fill="#4f8bd6", outline="")
+                if index:
+                    canvas.create_line(left, 0, left, height, fill="#ffffff", width=2)
+                left = right
         canvas.create_text(width // 2, height // 2, text=self._progress_text(value), fill="#111111")
 
     def _progress_text(self, value: float) -> str:
+        update = self.stage_update
+        stage = (f"{update.stages[update.index].name} "
+                 f"({update.index + 1} / {len(update.stages)}) | ") if update else ""
         if not self.render_started_at:
-            return "00:00 elapsed / --:-- remaining"
+            return stage + "00:00 elapsed / --:-- remaining"
         elapsed = max(0.0, time.monotonic() - self.render_started_at)
+        if value >= 1.0:
+            return f"{stage}{_format_time(elapsed)} elapsed / complete"
         if FINALIZING_PROGRESS <= value < 1.0:
-            return f"{_format_time(elapsed)} elapsed / finalizing"
+            return f"{stage}{_format_time(elapsed)} elapsed / finalizing"
         remaining = (max(0.0, self.eta_deadline - time.monotonic())
                      if self.eta_deadline is not None else None)
-        return f"{_format_time(elapsed)} elapsed / {_format_time(remaining)} remaining"
+        return f"{stage}{_format_time(elapsed)} elapsed / {_format_time(remaining)} remaining"
 
 
 def _format_time(seconds: float | None) -> str:

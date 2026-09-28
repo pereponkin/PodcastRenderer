@@ -16,6 +16,78 @@ from render import (
 
 
 class RenderJobTests(unittest.TestCase):
+    def test_stage_plan_follows_actual_video_operations(self) -> None:
+        cases = [
+            (False, False, 10, 2, ["Measuring loop", "Encoding loop", "Muxing and finalizing"]),
+            (True, False, 10, 2, ["Measuring loop", "Encoding intro", "Encoding loop",
+                               "Muxing and finalizing"]),
+            (False, True, 10, 2, ["Measuring loop", "Encoding outro", "Encoding loop",
+                               "Muxing and finalizing"]),
+            (True, True, 10, 2, ["Measuring loop", "Encoding intro", "Encoding outro",
+                              "Encoding loop", "Muxing and finalizing"]),
+            (True, True, 11, 2, ["Measuring loop", "Encoding intro", "Encoding outro",
+                              "Encoding loop", "Encoding loop tail", "Muxing and finalizing"]),
+            (False, False, 1, 2, ["Measuring loop", "Encoding loop tail",
+                               "Muxing and finalizing"]),
+            (False, False, 10, 2.1, ["Measuring loop", "Encoding loop",
+                                         "Muxing and finalizing"]),
+        ]
+        for use_intro, use_outro, seconds, loop_duration, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                audio = root / "audio.m4a"
+                intro = root / "intro.mp4" if use_intro else None
+                loop = root / "loop.mp4"
+                outro = root / "outro.mp4" if use_outro else None
+                updates = []
+                progress = []
+                commands = []
+                job = RenderJob()
+
+                def complete(cmd, _duration, _log, callback) -> int:
+                    commands.append(cmd)
+                    if callback:
+                        callback(render.FINALIZING_PROGRESS * 0.5)
+                    count = self._complete_stage(cmd, _duration, _log, callback)
+                    if cmd[-1].endswith(".partial.mp4"):
+                        if callback:
+                            callback(render.FINALIZING_PROGRESS)
+                        return seconds * 30
+                    if cmd[-1].endswith("tail.mp4"):
+                        return 30
+                    return count
+
+                with (
+                    patch("render.require_tools", return_value=("ffmpeg", "ffprobe")),
+                    patch("render.probe_audio", return_value=StreamInfo(
+                        duration=seconds, has_audio=True, audio_codec="aac")),
+                    patch("render.probe_video", return_value=StreamInfo(
+                        duration=loop_duration, has_video=True, width=64, height=64,
+                        frame_rate=Fraction(30))),
+                    patch.object(job, "_run", side_effect=complete),
+                ):
+                    job.render(audio, intro, loop, outro, root, log=lambda _: None,
+                               progress=progress.append, stage_progress=updates.append)
+
+                self.assertEqual(
+                    [stage.name for stage in updates[0].stages],
+                    ["Measuring loop", *(["Encoding intro"] if use_intro else []),
+                     *(["Encoding outro"] if use_outro else []),
+                     "Encoding middle", "Muxing and finalizing"],
+                )
+                self.assertEqual([stage.name for stage in updates[-1].stages], expected)
+                self.assertEqual(updates[-1].index, len(expected) - 1)
+                self.assertEqual(updates[-1].fraction, 1.0)
+                self.assertEqual(updates[-2].fraction, render.FINALIZING_PROGRESS)
+                self.assertEqual(progress[-2:], [render.FINALIZING_PROGRESS, 1.0])
+                for index, name in enumerate(expected):
+                    midpoint = (0.5 * render.FINALIZING_PROGRESS
+                                if name == "Muxing and finalizing" else 0.5)
+                    self.assertTrue(any(update.index == index and update.fraction == midpoint
+                                        and update.stages[index].name == name
+                                        for update in updates), name)
+                self.assertEqual(len(commands), len(expected))
+
     def test_missing_or_truncated_output_audio_is_not_published(self) -> None:
         source = StreamInfo(duration=10, has_audio=True, audio_codec="aac")
         video = StreamInfo(duration=2, has_video=True, width=64, height=64,

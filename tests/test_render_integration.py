@@ -200,8 +200,17 @@ class RenderIntegrationTests(unittest.TestCase):
             self.run_media("-f", "lavfi", "-i", "sine=frequency=440:duration=2.32",
                            "-c:a", "aac", "-ar", "48000", audio)
 
+            stage_updates = []
             output = RenderJob().render(audio, intro, loop, outro, folder,
-                                        log=lambda _line: None)
+                                        log=lambda _line: None,
+                                        stage_progress=stage_updates.append)
+            self.assertEqual(
+                [stage.name for stage in stage_updates[-1].stages],
+                ["Measuring loop", "Encoding intro", "Encoding outro", "Encoding loop",
+                 "Encoding loop tail", "Muxing and finalizing"],
+            )
+            self.assertEqual(stage_updates[-1].fraction, 1.0)
+            self.assertTrue(any(0 < update.fraction < 1 for update in stage_updates))
             expected_frames = math.ceil(Fraction(str(probe_audio(audio, self.ffprobe).duration)) * rate)
             packet_data = json.loads(subprocess.run(
                 [self.ffprobe, "-v", "error", "-select_streams", "v:0",

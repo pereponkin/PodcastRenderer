@@ -8,6 +8,8 @@ https://github.com/user-attachments/assets/ff6f0515-b6d0-4bf3-b7b6-627423cccb43
 
 Choose source files or drop one file onto its Audio, Intro, Loop, or Outro path field. Dropping a named video can still fill its matching sibling fields automatically.
 
+During rendering, the segmented progress bar follows the operations actually needed for the selected files. It shows the current stage and elapsed time, with an ETA during muxing.
+
 The `Audio` source may also be a common video container such as MP4, MOV, MKV, AVI, WebM, MPEG, TS, or WMV. Only its first audio stream is used.
 
 ## Install Without Python
@@ -131,7 +133,7 @@ CRF 20 was checked against the previous 2048k ABR settings on a 1080p intro/loop
 
 Audio output is automatic. AAC is copied without re-encoding, including 44.1 kHz AAC. Common lossless codecs (PCM, FLAC, ALAC, and others) are delivered as ALAC at the source sample rate; an existing ALAC stream is copied. Other lossy audio is encoded to AAC at 48 kHz. On Windows, Media Foundation (`aac_mf`) is preferred; on Intel macOS, AudioToolbox (`aac_at`) is preferred. Both are used for mono/stereo sources with a known bitrate up to 384 kbit/s if a short check on the source succeeds; the selected bitrate is never below the source bitrate. On Apple Silicon, or when the faster encoder does not qualify or fails its check, the native AAC encoder uses VBR quality `q=10` with no fixed bitrate ceiling. Channel count is preserved, including mono. The render log reports the decision.
 
-ALAC keeps lossless source audio lossless in the MP4 delivery master, avoiding an extra lossy encode before a platform processes the upload. Limited direct browser playback of ALAC is a separate concern from platform ingestion. Acceptance of ALAC-in-MP4 depends on the destination: [YouTube's recommended MP4 upload settings](https://support.google.com/youtube/answer/1722171?hl=en) list AAC-LC, Opus, or Eclipsa Audio, not ALAC. Check the target platform's requirements or upload a short test before relying on ALAC delivery. AAC-LC remains the more widely documented option for direct web playback and YouTube uploads.
+ALAC keeps lossless source audio lossless in the MP4 delivery master, avoiding an extra lossy encode before a platform processes the upload. [Users have successfully uploaded MP4 files with ALAC audio to YouTube](https://www.reddit.com/r/DJs/comments/11le2yn/how_can_i_post_my_music_on_youtube_widout_it/), even though [YouTube's recommended MP4 upload settings](https://support.google.com/youtube/answer/1722171?hl=en) list AAC-LC, Opus, or Eclipsa Audio, not ALAC. This is observed compatibility, not an official guarantee. For other platforms, check their requirements or try a short upload yourself. Direct browser playback of ALAC is a separate concern and may be limited.
 
 Lossless preservation applies to integer audio up to 24 bits. For higher bit depths or floating-point audio, the app asks for confirmation before converting to 24-bit ALAC. Conversion reduces precision, and floating-point peaks above 0 dBFS are clipped. Cancel leaves the source untouched and produces no output; approval applies only to that render. The source file is never modified.
 

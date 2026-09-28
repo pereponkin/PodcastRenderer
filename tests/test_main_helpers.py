@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from main import APP_TITLE, APP_VERSION, App, find_video_siblings
-from render import AudioConversionRequired, FINALIZING_PROGRESS, MUX_START_PROGRESS
+from render import (
+    AudioConversionRequired, FINALIZING_PROGRESS, MUX_START_PROGRESS,
+    ProgressStage, StageUpdate,
+)
 
 
 class VideoSiblingTests(unittest.TestCase):
@@ -157,11 +160,12 @@ class WindowLifecycleTests(unittest.TestCase):
     def test_progress_text_names_finalization_phase(self) -> None:
         app = object.__new__(App)
         app.render_started_at = 90.0
+        app.stage_update = StageUpdate((ProgressStage("Muxing and finalizing", 0.24),), 0, 0.999)
 
         with patch("main.time.monotonic", return_value=100.0):
             text = App._progress_text(app, 0.999)
 
-        self.assertEqual(text, "00:10 elapsed / finalizing")
+        self.assertEqual(text, "Muxing and finalizing (1 / 1) | 00:10 elapsed / finalizing")
 
     def test_eta_waits_for_mux_and_uses_its_observed_speed(self) -> None:
         app = object.__new__(App)
@@ -169,6 +173,7 @@ class WindowLifecycleTests(unittest.TestCase):
         app.mux_started_at = None
         app.eta_deadline = None
         app.progress_value = 0.2
+        app.stage_update = None
         with patch("main.time.monotonic", return_value=110.0):
             App._update_eta(app)
             self.assertEqual(App._progress_text(app, 0.2),
@@ -189,7 +194,7 @@ class WindowLifecycleTests(unittest.TestCase):
             self.assertEqual(App._progress_text(app, app.progress_value),
                              "00:35 elapsed / 00:25 remaining")
 
-    def test_preparation_bar_does_not_show_stage_weights_as_completion(self) -> None:
+    def test_segment_bar_fills_completed_and_active_stages(self) -> None:
         app = object.__new__(App)
         app.progress_canvas = Mock()
         app.progress_canvas.winfo_width.return_value = 100
@@ -197,14 +202,31 @@ class WindowLifecycleTests(unittest.TestCase):
         app.render_started_at = 100.0
         app.eta_deadline = None
         app.progress_value = 0.7
+        app.stage_update = StageUpdate(
+            (ProgressStage("Measuring loop", 0.08),
+             ProgressStage("Encoding loop", 0.28),
+             ProgressStage("Muxing and finalizing", 0.24)), 1, 0.5,
+        )
 
         with patch("main.time.monotonic", return_value=110.0):
             App._draw_progress(app)
 
         filled = [call.args for call in app.progress_canvas.create_rectangle.call_args_list
                   if call.kwargs.get("fill") == "#4f8bd6"]
-        self.assertTrue(filled)
-        self.assertLessEqual(filled[0][2] - filled[0][0], 40)
+        self.assertEqual(len(filled), 2)
+        self.assertAlmostEqual(filled[0][2], 100 * 0.08 / 0.60)
+        self.assertAlmostEqual(filled[1][2], 100 * (0.08 + 0.14) / 0.60)
+        self.assertIn("Encoding loop (2 / 3)",
+                      app.progress_canvas.create_text.call_args.kwargs["text"])
+
+        app.progress_value = 1.0
+        app.stage_update = StageUpdate(app.stage_update.stages, 2, 1.0)
+        App._draw_progress(app)
+        filled = [call.args for call in app.progress_canvas.create_rectangle.call_args_list
+                  if call.kwargs.get("fill") == "#4f8bd6"][-3:]
+        self.assertEqual(len(filled), 3)
+        self.assertAlmostEqual(filled[-1][2], 100)
+        self.assertIn("complete", app.progress_canvas.create_text.call_args.kwargs["text"])
 
     def test_cancel_failure_is_reported_and_window_remains_open(self) -> None:
         app = object.__new__(App)
