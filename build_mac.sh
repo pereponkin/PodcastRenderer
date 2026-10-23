@@ -12,7 +12,7 @@ LICENSES="licenses"
 INSTALL_GUIDE="installer/MACOS_INSTALL.txt"
 BUILD_REQUIREMENTS="requirements-build.txt"
 RUNTIME_REQUIREMENTS="requirements.txt"
-ICON="assets/Podcast Renderer.ico"
+ICON="assets/brand/PodcastRenderer.ico"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -104,6 +104,7 @@ rm -rf build dist "${APP_NAME}.spec"
   --name "$APP_NAME" \
   --icon "$ICON" \
   --collect-all tkinterdnd2 \
+  --add-data "assets/brand:assets/brand" \
   --osx-bundle-identifier "io.github.pereponkin.podcastrenderer" \
   --add-binary "$VENDOR_DIR/ffmpeg:bin" \
   --add-binary "$VENDOR_DIR/ffprobe:bin" \

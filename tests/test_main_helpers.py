@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from main import APP_TITLE, APP_VERSION, App, find_video_siblings
+from main import APP_TITLE, APP_VERSION, UI_ACCENT, App, find_video_siblings
 from render import (
     AudioConversionRequired, FINALIZING_PROGRESS, MUX_START_PROGRESS,
     ProgressStage, StageUpdate,
@@ -50,6 +50,66 @@ class VersionTests(unittest.TestCase):
 
 
 class WindowLifecycleTests(unittest.TestCase):
+    def test_busy_transition_moves_focus_only_from_the_replaced_action(self) -> None:
+        for busy, origin, destination in ((True, "render", "cancel"),
+                                          (False, "cancel", "render"),
+                                          (True, "input", None),
+                                          (False, "input", None)):
+            with self.subTest(busy=busy, origin=origin):
+                controls = {key: Mock() for key in ("render", "cancel", "input")}
+                app = SimpleNamespace(
+                    render_button=controls["render"], cancel_button=controls["cancel"],
+                    progress_canvas=Mock(), focus_get=Mock(return_value=controls[origin]),
+                )
+
+                App._set_busy(app, busy)
+
+                for key, control in controls.items():
+                    if key == destination:
+                        control.focus_set.assert_called_once_with()
+                    else:
+                        control.focus_set.assert_not_called()
+                app.cancel_button.configure.assert_called_once_with(
+                    state="normal" if busy else "disabled",
+                )
+
+    def test_invalid_render_focuses_the_field_that_needs_correction(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            audio, video = root / "audio.wav", root / "loop.mp4"
+            audio.touch()
+            video.touch()
+            valid = {"AUDIO": str(audio), "INTRO": "", "LOOP": str(video),
+                     "OUTRO": "", "OUTPUT": str(root)}
+            cases = (
+                ({"AUDIO": "", "OUTPUT": ""}, "AUDIO"),
+                ({"LOOP": ""}, "LOOP"),
+                ({"LOOP": "", "INTRO": str(video), "OUTRO": str(video)}, "LOOP"),
+                ({"AUDIO": str(root / "missing.wav")}, "AUDIO"),
+                ({"LOOP": str(root / "missing.mp4")}, "LOOP"),
+                ({"OUTPUT": str(root / "missing-folder")}, "OUTPUT"),
+            )
+            for changes, expected_field in cases:
+                with self.subTest(changes=changes):
+                    app = object.__new__(App)
+                    app.entries = {key: Mock() for key in valid}
+                    app.input_fields = {key: Mock() for key in valid}
+                    app._start_render = Mock()
+                    for key, value in (valid | changes).items():
+                        app.entries[key].get.return_value = value
+
+                    with patch("main.messagebox.showerror") as dialog:
+                        App._render(app)
+
+                    dialog.assert_called_once()
+                    app._start_render.assert_not_called()
+                    for key, field in app.input_fields.items():
+                        if key == expected_field:
+                            field.focus_set.assert_called_once_with()
+                            field.selection_range.assert_called_once_with(0, "end")
+                        else:
+                            field.focus_set.assert_not_called()
+
     def test_precision_warning_returns_to_ui_without_rendering(self) -> None:
         app = object.__new__(App)
         app.current_job = Mock()
@@ -212,7 +272,7 @@ class WindowLifecycleTests(unittest.TestCase):
             App._draw_progress(app)
 
         filled = [call.args for call in app.progress_canvas.create_rectangle.call_args_list
-                  if call.kwargs.get("fill") == "#4f8bd6"]
+                  if call.kwargs.get("fill") == UI_ACCENT]
         self.assertEqual(len(filled), 2)
         self.assertAlmostEqual(filled[0][2], 100 * 0.08 / 0.60)
         self.assertAlmostEqual(filled[1][2], 100 * (0.08 + 0.14) / 0.60)
@@ -223,7 +283,7 @@ class WindowLifecycleTests(unittest.TestCase):
         app.stage_update = StageUpdate(app.stage_update.stages, 2, 1.0)
         App._draw_progress(app)
         filled = [call.args for call in app.progress_canvas.create_rectangle.call_args_list
-                  if call.kwargs.get("fill") == "#4f8bd6"][-3:]
+                  if call.kwargs.get("fill") == UI_ACCENT][-3:]
         self.assertEqual(len(filled), 3)
         self.assertAlmostEqual(filled[-1][2], 100)
         self.assertIn("complete", app.progress_canvas.create_text.call_args.kwargs["text"])

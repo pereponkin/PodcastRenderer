@@ -7,7 +7,7 @@ import threading
 import tkinter as tk
 import time
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from render import (
@@ -17,24 +17,40 @@ from render import (
 
 
 APP_NAME = "Podcast Renderer"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
+
+UI_BACKGROUND = "#F4F5F0"
+UI_SURFACE = "#FFFFFF"
+UI_INK = "#182523"
+UI_ACCENT = "#007F73"
+UI_ACCENT_HOVER = "#006D63"
+UI_ACCENT_PRESSED = "#005E55"
+UI_MUTED = "#60716B"
+UI_BORDER = "#DCE4DF"
+UI_TRACK = "#E7EEEA"
 
 
 class App(TkinterDnD.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        icon = app_path("assets", "Podcast Renderer.ico")
+        icon = app_path("assets", "brand", "PodcastRenderer.ico")
         if icon.exists():
             try:
                 self.iconbitmap(str(icon))
             except tk.TclError:
                 pass
-        self.geometry("820x520")
-        self.minsize(720, 440)
+        window_icon = app_path("assets", "brand", "app-icon.png")
+        if window_icon.exists() and sys.platform != "win32":
+            self.window_icon = tk.PhotoImage(file=str(window_icon))
+            self.iconphoto(True, self.window_icon)
+        self.geometry("920x680")
+        self.minsize(800, 620)
+        self._configure_styles()
         self.log_queue: queue.Queue[tuple[str, str | tuple[str, dict[str, str]] | StageUpdate]] = queue.Queue()
         self.entries: dict[str, tk.StringVar] = {}
+        self.input_fields: dict[str, ttk.Entry] = {}
         self.render_button: ttk.Button | None = None
         self.progress_canvas: tk.Canvas | None = None
         self.cancel_button: ttk.Button | None = None
@@ -49,9 +65,94 @@ class App(TkinterDnD.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_log)
 
+    def _configure_styles(self) -> None:
+        self.configure(background=UI_BACKGROUND)
+        families = tkfont.families(self)
+        preferred = {"win32": "Segoe UI", "darwin": "Helvetica"}.get(sys.platform, "Ubuntu")
+        self.ui_font = preferred if preferred in families else tkfont.nametofont("TkDefaultFont", self).actual("family")
+        tkfont.nametofont("TkDefaultFont", self).configure(family=self.ui_font, size=11)
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("TFrame", background=UI_BACKGROUND)
+        style.configure("TLabel", background=UI_BACKGROUND, foreground=UI_INK)
+        style.configure("Surface.TFrame", background=UI_SURFACE)
+        style.configure("Surface.TLabel", background=UI_SURFACE, foreground=UI_INK)
+        style.configure("Title.TLabel", font=(self.ui_font, 24, "bold"))
+        style.configure("Tagline.TLabel", foreground=UI_ACCENT, font=(self.ui_font, 11))
+        style.configure("Muted.TLabel", foreground=UI_MUTED, font=(self.ui_font, 10))
+        style.configure("Section.TLabel", background=UI_SURFACE, font=(self.ui_font, 12, "bold"))
+        style.configure("Hint.TLabel", background=UI_SURFACE, foreground=UI_MUTED, font=(self.ui_font, 10))
+        style.configure(
+            "TEntry", background=UI_SURFACE, fieldbackground=UI_SURFACE, foreground=UI_INK,
+            bordercolor=UI_BORDER, lightcolor=UI_BORDER, darkcolor=UI_BORDER,
+            padding=(10, 6), insertcolor=UI_INK, selectbackground=UI_ACCENT,
+            selectforeground=UI_SURFACE,
+        )
+        style.map(
+            "TEntry", bordercolor=[("focus", UI_ACCENT)],
+            lightcolor=[("focus", UI_ACCENT)], darkcolor=[("focus", UI_ACCENT)],
+            background=[("readonly", UI_TRACK), ("disabled", UI_TRACK)],
+            fieldbackground=[("readonly", UI_TRACK), ("disabled", UI_TRACK)],
+            foreground=[("disabled", UI_MUTED)],
+        )
+        style.configure(
+            "TButton", background=UI_SURFACE, foreground=UI_INK,
+            bordercolor=UI_BORDER, lightcolor=UI_SURFACE, darkcolor=UI_SURFACE,
+            padding=(16, 7), font=(self.ui_font, 10), focusthickness=1,
+            focuscolor=UI_ACCENT,
+        )
+        style.map(
+            "TButton", background=[("disabled", UI_TRACK), ("pressed", UI_BORDER), ("active", UI_TRACK)],
+            foreground=[("disabled", UI_MUTED)], bordercolor=[("focus", UI_ACCENT)],
+            lightcolor=[("pressed", UI_BORDER)], darkcolor=[("pressed", UI_BORDER)],
+        )
+        style.configure(
+            "Accent.TButton", background=UI_ACCENT, foreground=UI_SURFACE,
+            bordercolor=UI_ACCENT, lightcolor=UI_ACCENT, darkcolor=UI_ACCENT,
+            padding=(18, 11), font=(self.ui_font, 11, "bold"), focuscolor=UI_SURFACE,
+        )
+        accent_fills = [("disabled", UI_TRACK), ("pressed", UI_ACCENT_PRESSED), ("active", UI_ACCENT_HOVER)]
+        style.map(
+            "Accent.TButton", background=accent_fills, lightcolor=accent_fills, darkcolor=accent_fills,
+            foreground=[("disabled", UI_MUTED), ("!disabled", UI_SURFACE)],
+            bordercolor=[("focus", UI_INK), ("!focus", UI_ACCENT)],
+        )
+        style.configure(
+            "Vertical.TScrollbar", background=UI_BORDER, troughcolor=UI_SURFACE,
+            bordercolor=UI_SURFACE, lightcolor=UI_SURFACE, darkcolor=UI_SURFACE,
+            arrowcolor=UI_MUTED, width=12,
+        )
+        style.map(
+            "Vertical.TScrollbar", background=[("pressed", UI_MUTED), ("active", UI_BORDER)],
+            lightcolor=[("pressed", UI_BORDER)], darkcolor=[("pressed", UI_BORDER)],
+        )
+
     def _build(self) -> None:
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(6, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(3, weight=1)
+
+        header = ttk.Frame(self, padding=(24, 18, 24, 14))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        brand = app_path("assets", "brand", "logo.png")
+        if brand.exists():
+            self.brand_image = tk.PhotoImage(file=str(brand)).subsample(2, 2)
+            ttk.Label(header, image=self.brand_image).grid(row=0, column=0, rowspan=2, padx=(0, 18))
+        ttk.Label(header, text=APP_NAME, style="Title.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Label(
+            header, text="One loop render. The whole episode.", style="Tagline.TLabel",
+        ).grid(row=1, column=1, sticky="w", pady=(3, 0))
+        ttk.Label(header, text=f"Version {APP_VERSION}", style="Muted.TLabel").grid(row=0, column=2, sticky="e")
+
+        sources = ttk.Frame(self, style="Surface.TFrame", padding=(20, 14))
+        sources.grid(row=1, column=0, padx=24, sticky="ew")
+        sources.columnconfigure(1, weight=1)
+        ttk.Label(sources, text="Source files", style="Section.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            sources, text="Choose at least one video; Loop is needed when combining clips.\n"
+            "Drop files onto their fields. Output defaults to the audio folder.",
+            style="Hint.TLabel", justify="left",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 10))
 
         filetypes = {
             "AUDIO": [
@@ -68,44 +169,61 @@ class App(TkinterDnD.Tk):
             "OUTRO": [("Video files", "*.mp4 *.mov *.m4v"), ("All files", "*.*")],
         }
         display_labels = {
-            "AUDIO": "Audio",
-            "INTRO": "Intro",
+            "AUDIO": "Audio (required)",
+            "INTRO": "Intro (optional)",
             "LOOP": "Loop",
-            "OUTRO": "Outro",
+            "OUTRO": "Outro (optional)",
         }
-        for row, label in enumerate(("AUDIO", "INTRO", "LOOP", "OUTRO")):
-            ttk.Label(self, text=f"{display_labels[label]}:").grid(row=row, column=0, padx=10, pady=6, sticky="w")
+        for row, label in enumerate(("AUDIO", "INTRO", "LOOP", "OUTRO"), start=2):
+            ttk.Label(sources, text=f"{display_labels[label]}:", style="Surface.TLabel").grid(
+                row=row, column=0, padx=(0, 16), pady=4, sticky="w",
+            )
             value = tk.StringVar()
             self.entries[label] = value
-            entry = ttk.Entry(self, textvariable=value)
-            entry.grid(row=row, column=1, padx=6, pady=6, sticky="ew")
+            entry = ttk.Entry(sources, textvariable=value)
+            self.input_fields[label] = entry
+            entry.grid(row=row, column=1, pady=4, sticky="nsew")
             entry.drop_target_register(DND_FILES)
             entry.dnd_bind("<<Drop>>", lambda event, key=label: self._drop_file(event, key))
             ttk.Button(
-                self,
+                sources,
                 text="Choose",
                 command=lambda key=label: self._choose(key, filetypes[key]),
-            ).grid(row=row, column=2, padx=10, pady=6)
+            ).grid(row=row, column=2, padx=(12, 0), pady=4)
 
-        ttk.Label(self, text="OUTPUT:").grid(row=4, column=0, padx=10, pady=6, sticky="w")
+        ttk.Label(sources, text="Output:", style="Surface.TLabel").grid(row=6, column=0, padx=(0, 16), pady=(12, 0), sticky="w")
         output = tk.StringVar()
         self.entries["OUTPUT"] = output
-        ttk.Entry(self, textvariable=output).grid(row=4, column=1, padx=6, pady=6, sticky="ew")
-        ttk.Button(self, text="Choose", command=self._choose_output).grid(row=4, column=2, padx=10, pady=6)
+        self.input_fields["OUTPUT"] = ttk.Entry(sources, textvariable=output)
+        self.input_fields["OUTPUT"].grid(row=6, column=1, pady=(12, 0), sticky="nsew")
+        ttk.Button(sources, text="Choose", command=self._choose_output).grid(row=6, column=2, padx=(12, 0), pady=(12, 0))
 
-        self.render_button = ttk.Button(self, text="Render", command=self._render)
-        self.render_button.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        actions = ttk.Frame(self)
+        actions.grid(row=2, column=0, padx=24, pady=(12, 12), sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        self.render_button = ttk.Button(actions, text="Render", command=self._render, style="Accent.TButton")
+        self.render_button.grid(row=0, column=0, padx=(0, 12), sticky="ew")
 
-        self.progress_canvas = tk.Canvas(self, height=26, highlightthickness=1, highlightbackground="#9a9a9a")
+        self.progress_canvas = tk.Canvas(actions, height=46, background=UI_BACKGROUND, highlightthickness=0)
         self.progress_canvas.bind("<Configure>", lambda _event: self._draw_progress())
-        self.cancel_button = ttk.Button(self, text="Cancel", command=self._cancel, state="disabled")
-        self.cancel_button.grid(row=5, column=2, padx=10, pady=10, sticky="ew")
+        self.cancel_button = ttk.Button(actions, text="Cancel", command=self._cancel, state="disabled", width=12)
+        self.cancel_button.grid(row=0, column=1, sticky="ew")
 
-        self.log = tk.Text(self, wrap="word", height=14)
-        self.log.grid(row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="nsew")
-        scroll = ttk.Scrollbar(self, orient="vertical", command=self.log.yview)
-        scroll.grid(row=6, column=3, pady=(0, 10), sticky="ns")
+        activity = ttk.Frame(self, style="Surface.TFrame", padding=(20, 10))
+        activity.grid(row=3, column=0, padx=24, pady=(0, 24), sticky="nsew")
+        activity.columnconfigure(0, weight=1)
+        activity.rowconfigure(1, weight=1)
+        ttk.Label(activity, text="Activity", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.log = tk.Text(
+            activity, wrap="word", height=6, background=UI_SURFACE, foreground=UI_MUTED,
+            font=(self.ui_font, 10), relief="flat", borderwidth=0, highlightthickness=0,
+            insertbackground=UI_INK, selectbackground=UI_ACCENT, selectforeground=UI_SURFACE,
+        )
+        self.log.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(activity, orient="vertical", command=self.log.yview)
+        scroll.grid(row=1, column=1, padx=(8, 0), sticky="ns")
         self.log.configure(yscrollcommand=scroll.set)
+        self._append("Ready. Render stages and the saved file path will appear here.")
 
     def _choose(self, key: str, filetypes: list[tuple[str, str]]) -> None:
         selected = filedialog.askopenfilename(title=f"Choose {key}", filetypes=filetypes)
@@ -144,14 +262,14 @@ class App(TkinterDnD.Tk):
             self.entries["OUTPUT"].set(paths["OUTPUT"])
         missing = [key for key in ("AUDIO", "OUTPUT") if not paths[key]]
         if missing:
-            messagebox.showerror("Missing files", "Choose: " + ", ".join(missing))
+            self._show_input_error(missing[0], "Missing files", "Choose: " + ", ".join(missing))
             return
         video_keys = [key for key in ("INTRO", "LOOP", "OUTRO") if paths[key]]
         if not video_keys:
-            messagebox.showerror("Missing video", "Choose at least one video file.")
+            self._show_input_error("LOOP", "Missing video", "Choose at least one video file.")
             return
         if len(video_keys) > 1 and "LOOP" not in video_keys:
-            messagebox.showerror("Missing LOOP", "LOOP is required when using multiple video files.")
+            self._show_input_error("LOOP", "Missing LOOP", "LOOP is required when using multiple video files.")
             return
         for key, value in paths.items():
             if not value:
@@ -159,14 +277,19 @@ class App(TkinterDnD.Tk):
             if key == "OUTPUT":
                 continue
             if not Path(value).exists():
-                messagebox.showerror("File not found", f"{key} file does not exist:\n{value}")
+                self._show_input_error(key, "File not found", f"{key} file does not exist:\n{value}")
                 return
         output = Path(paths["OUTPUT"])
         if not output.exists() or not output.is_dir():
-            messagebox.showerror("Output folder not found", f"OUTPUT folder does not exist:\n{output}")
+            self._show_input_error("OUTPUT", "Output folder not found", f"OUTPUT folder does not exist:\n{output}")
             return
 
         self._start_render(paths)
+
+    def _show_input_error(self, key: str, title: str, message: str) -> None:
+        messagebox.showerror(title, message)
+        self.input_fields[key].focus_set()
+        self.input_fields[key].selection_range(0, "end")
 
     def _start_render(self, paths: dict[str, str], allow_audio_conversion: bool = False) -> None:
         self.log.delete("1.0", "end")
@@ -209,7 +332,7 @@ class App(TkinterDnD.Tk):
 
     def _cancel(self) -> None:
         if self.current_job:
-            self._append("Cancelling...")
+            self._append("Cancelling…")
             self.current_job.cancel()
 
     def _on_close(self) -> None:
@@ -219,7 +342,7 @@ class App(TkinterDnD.Tk):
             self.destroy()
             return
         self._closing = True
-        self._append("Closing: cancelling render...")
+        self._append("Closing: cancelling render…")
         if self.cancel_button:
             self.cancel_button.configure(state="disabled")
         self.current_job.cancel()
@@ -307,6 +430,7 @@ class App(TkinterDnD.Tk):
         self.log.see("end")
 
     def _set_busy(self, busy: bool) -> None:
+        focused = self.focus_get()
         if self.render_button:
             if busy:
                 self.render_button.grid_remove()
@@ -314,11 +438,15 @@ class App(TkinterDnD.Tk):
                 self.render_button.grid()
         if self.progress_canvas:
             if busy:
-                self.progress_canvas.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+                self.progress_canvas.grid(row=0, column=0, padx=(0, 12), sticky="ew")
             else:
                 self.progress_canvas.grid_remove()
         if self.cancel_button:
             self.cancel_button.configure(state="normal" if busy else "disabled")
+        if busy and focused is self.render_button and self.cancel_button:
+            self.cancel_button.focus_set()
+        elif not busy and focused is self.cancel_button and self.render_button:
+            self.render_button.focus_set()
         if not busy:
             self.current_job = None
             self.render_started_at = None
@@ -333,7 +461,9 @@ class App(TkinterDnD.Tk):
         width = max(canvas.winfo_width(), 1)
         height = max(canvas.winfo_height(), 1)
         value = max(0.0, min(self.progress_value, 1.0))
-        canvas.create_rectangle(0, 0, width, height, fill="#f3f3f3", outline="")
+        canvas.create_rectangle(0, 0, width, height, fill=UI_BACKGROUND, outline="")
+        bar_top = max(0, height - 8)
+        canvas.create_rectangle(0, bar_top, width, height, fill=UI_TRACK, outline="")
         update = self.stage_update
         if update:
             total_weight = sum(stage.weight for stage in update.stages)
@@ -343,12 +473,12 @@ class App(TkinterDnD.Tk):
                 fraction = (1.0 if index < update.index else
                             update.fraction if index == update.index else 0.0)
                 if fraction:
-                    canvas.create_rectangle(left, 0, left + (right - left) * fraction,
-                                            height, fill="#4f8bd6", outline="")
+                    canvas.create_rectangle(left, bar_top, left + (right - left) * fraction,
+                                            height, fill=UI_ACCENT, outline="")
                 if index:
-                    canvas.create_line(left, 0, left, height, fill="#ffffff", width=2)
+                    canvas.create_line(left, bar_top, left, height, fill=UI_BACKGROUND, width=2)
                 left = right
-        canvas.create_text(width // 2, height // 2, text=self._progress_text(value), fill="#111111")
+        canvas.create_text(width // 2, bar_top // 2, text=self._progress_text(value), fill=UI_INK, font="TkDefaultFont")
 
     def _progress_text(self, value: float) -> str:
         update = self.stage_update

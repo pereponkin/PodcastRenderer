@@ -10,7 +10,7 @@ $ffmpeg = Join-Path $PSScriptRoot "vendor\windows\ffmpeg.exe"
 $ffprobe = Join-Path $PSScriptRoot "vendor\windows\ffprobe.exe"
 $ffmpegHash = Join-Path $PSScriptRoot "vendor\windows\ffmpeg.sha256"
 $ffprobeHash = Join-Path $PSScriptRoot "vendor\windows\ffprobe.sha256"
-$icon = Join-Path $PSScriptRoot "assets\Podcast Renderer.ico"
+$icon = Join-Path $PSScriptRoot "assets\brand\PodcastRenderer.ico"
 $notices = Join-Path $PSScriptRoot "THIRD_PARTY_NOTICES.md"
 $sourceOffer = Join-Path $PSScriptRoot "FFMPEG_SOURCE_OFFER.md"
 $licenses = Join-Path $PSScriptRoot "licenses"
@@ -124,7 +124,7 @@ python -m PyInstaller `
     --collect-all tkinterdnd2 `
     --add-binary "$ffmpeg;bin" `
     --add-binary "$ffprobe;bin" `
-    --add-data "$icon;assets" `
+    --add-data "assets\brand;assets\brand" `
     --add-data "$notices;." `
     --add-data "$sourceOffer;." `
     --add-data "$licenses;licenses" `

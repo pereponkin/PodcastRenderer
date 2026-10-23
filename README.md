@@ -4,7 +4,7 @@
 
 Small Python GUI app that renders an MP4 video master for platform delivery from one audio file and up to three silent video files: intro, loop, outro. Video inputs can be MP4, MOV, or M4V as long as FFmpeg can read them.
 
-https://github.com/user-attachments/assets/ff6f0515-b6d0-4bf3-b7b6-627423cccb43
+https://github.com/user-attachments/assets/1f60dad3-a34c-44e3-9fa0-c215794630b1
 
 Choose source files or drop one file onto its Audio, Intro, Loop, or Outro path field. Dropping a named video can still fill its matching sibling fields automatically.
 
